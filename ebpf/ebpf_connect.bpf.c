@@ -10,6 +10,8 @@
 // #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
 #include "ebpf.h"
 
@@ -30,19 +32,19 @@ struct {
     __type(value, struct event);
 } pending_connects SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 16384);
-    __type(key, __u64);
-    __type(value, struct event);
-} pending_sendto SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);
-    __type(key, __u64);
-    __type(value, struct event);
-} pending_sendmsg SEC(".maps");
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 16384);
+//     __type(key, __u64);
+//     __type(value, struct event);
+// } pending_sendto SEC(".maps");
+//
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 4096);
+//     __type(key, __u64);
+//     __type(value, struct event);
+// } pending_sendmsg SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -281,183 +283,218 @@ int handle_close(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
-SEC("tp/syscalls/sys_enter_sendto")
-int handle_enter_sendto(struct trace_event_raw_sys_enter *ctx) {
-    void *addr = (void *)ctx->args[4];
+// SEC("tp/syscalls/sys_enter_sendto")
+// int handle_enter_sendto(struct trace_event_raw_sys_enter *ctx) {
+//     void *addr = (void *)ctx->args[4];
+//     if (!addr) {
+//         return 0;
+//     }
+//
+//     __u64 id = bpf_get_current_pid_tgid();
+//     __u32 pid = id >> 32;
+//
+//     if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+//         return 0;
+//     }
+//
+//     int fd = (int)ctx->args[0];
+//     __u64 key = ((__u64)pid << 32) | (__u32)fd;
+//     struct socket_info *info = bpf_map_lookup_elem(&sockets, &key);
+//
+//     if (!info || info->protocol != IPPROTO_UDP) {
+//         return 0;
+//     }
+//
+//     struct event e = {};
+//     if (parse_user_sockaddr(addr, &e) < 0) {
+//         return 0;
+//     }
+//
+//     e.pid = pid;
+//     e.tid = (__u32)id;
+//     e.fd = fd;
+//     e.type = info->type;
+//     e.protocol = IPPROTO_UDP;
+//     bpf_get_current_comm(e.comm, sizeof(e.comm));
+//     bpf_map_update_elem(&pending_sendto, &id, &e, BPF_ANY);
+//     return 0;
+// }
+//
+// SEC("tp/syscalls/sys_exit_sendto")
+// int handle_exit_sendto(struct trace_event_raw_sys_exit *ctx)
+// {
+//     __u64 id = bpf_get_current_pid_tgid();
+//
+//     struct event *e = bpf_map_lookup_elem(&pending_sendto, &id);
+//
+//     if (!e) {
+//         return 0;
+//     }
+//
+//     long ret = ctx->ret;
+//
+//     if (ret >= 0) {
+//         e->result = 0;
+//         struct flow_key fkey = {};
+//         fkey.family = e->family;
+//         fkey.remote_port = e->remote_port;
+//         __builtin_memcpy(fkey.remote_addr, e->remote_addr, sizeof(fkey.remote_addr));
+//
+//         struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
+//
+//         if (!m) {
+//             struct flow_metrics zero = {};
+//             bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST);}
+//     } else {
+//         e->result = (int)ret;
+//     }
+//     bpf_ringbuf_output(&events, e, sizeof(*e), 0);
+//     bpf_map_delete_elem(&pending_sendto, &id);
+//     return 0;
+// }
+//
+// SEC("tp/syscalls/sys_enter_sendmsg")
+// int handle_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
+//     __u64 id = bpf_get_current_pid_tgid();
+//     __u32 pid = id >> 32;
+//
+//     if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+//         return 0;
+//     }
+//
+//     int fd = (int)ctx->args[0];
+//     __u64 key = ((__u64)pid << 32) | (__u32)fd;
+//
+//     struct socket_info *info = bpf_map_lookup_elem(&sockets, &key);
+//
+//     if (!info || info->protocol != IPPROTO_UDP) {
+//         return 0;
+//     }
+//
+//     struct msghdr msg = {};
+//
+//     if (bpf_probe_read_user(&msg, sizeof(msg), (void *)ctx->args[1]) != 0) {
+//         return 0;
+//     }
+//
+//     if (!msg.msg_name) {
+//         return 0;
+//     }
+//
+//     struct event e = {};
+//
+//     if (parse_user_sockaddr(msg.msg_name, &e) < 0) {
+//         return 0;
+//     }
+//
+//     e.pid = pid;
+//     e.tid = (__u32)id;
+//     e.fd = fd;
+//     e.type = info->type;
+//     e.protocol = IPPROTO_UDP;
+//
+//     bpf_get_current_comm(e.comm, sizeof(e.comm));
+//
+//     bpf_map_update_elem(&pending_sendmsg, &id, &e, BPF_ANY);
+//
+//     return 0;
+// }
+//
+// SEC("tp/syscalls/sys_exit_sendmsg")
+// int handle_exit_sendmsg(struct trace_event_raw_sys_exit *ctx)
+// {
+//     __u64 id = bpf_get_current_pid_tgid();
+//
+//     struct event *e = bpf_map_lookup_elem(&pending_sendmsg, &id);
+//
+//     if (!e) {
+//         return 0;
+//     }
+//
+//     long ret = ctx->ret;
+//
+//     if (ret >= 0) {
+//         e->result = 0;
+//
+//         struct flow_key fkey = {};
+//         fkey.family = e->family;
+//         fkey.remote_port = e->remote_port;
+//
+//         __builtin_memcpy(fkey.remote_addr, e->remote_addr, sizeof(fkey.remote_addr));
+//
+//         struct flow_metrics zero = {};
+//
+//         long added = bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST );
+//
+//         if (added == 0) {
+//             bpf_ringbuf_output(&events, e, sizeof(*e), 0);
+//         }
+//     } else {
+//         e->result = (int)ret;
+//     }
+//
+//     bpf_map_delete_elem(&pending_sendmsg, &id);
+//
+//     return 0;
+// }
+
+static int udp_check(struct msghdr *msg) {
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 pid = id >> 32;
+
+    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+        return 0;
+    }
+
+    void *addr = BPF_CORE_READ(msg, msg_name);
+
     if (!addr) {
         return 0;
     }
 
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 pid = id >> 32;
+    struct flow_key key = {};
 
-    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+    if (bpf_probe_read_kernel(&key.family, sizeof(key.family), addr) < 0) {
         return 0;
     }
 
-    int fd = (int)ctx->args[0];
-    __u64 key = ((__u64)pid << 32) | (__u32)fd;
-    struct socket_info *info = bpf_map_lookup_elem(&sockets, &key);
-
-    if (!info || info->protocol != IPPROTO_UDP) {
-        return 0;
-    }
-
-    struct event e = {};
-    if (parse_user_sockaddr(addr, &e) < 0) {
-        return 0;
-    }
-
-    e.pid = pid;
-    e.tid = (__u32)id;
-    e.fd = fd;
-    e.type = info->type;
-    e.protocol = IPPROTO_UDP;
-    bpf_get_current_comm(e.comm, sizeof(e.comm));
-    bpf_map_update_elem(&pending_sendto, &id, &e, BPF_ANY);
-    return 0;
-}
-
-SEC("tp/syscalls/sys_exit_sendto")
-int handle_exit_sendto(struct trace_event_raw_sys_exit *ctx)
-{
-    __u64 id = bpf_get_current_pid_tgid();
-
-    struct event *e = bpf_map_lookup_elem(&pending_sendto, &id);
-
-    if (!e) {
-        return 0;
-    }
-
-    long ret = ctx->ret;
-
-    if (ret >= 0) {
-        e->result = 0;
-        struct flow_key fkey = {};
-        fkey.family = e->family;
-        fkey.remote_port = e->remote_port;
-        __builtin_memcpy(fkey.remote_addr, e->remote_addr, sizeof(fkey.remote_addr));
-
-        struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
-
-        if (!m) {
-            struct flow_metrics zero = {};
-            bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST);}
-    } else {
-        e->result = (int)ret;
-    }
-    bpf_ringbuf_output(&events, e, sizeof(*e), 0);
-    bpf_map_delete_elem(&pending_sendto, &id);
-    return 0;
-}
-
-SEC("tp/syscalls/sys_enter_sendmsg")
-int handle_enter_sendmsg(struct trace_event_raw_sys_enter *ctx)
-{
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 pid = id >> 32;
-
-    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
-        return 0;
-    }
-
-    int fd = (int)ctx->args[0];
-    __u64 key = ((__u64)pid << 32) | (__u32)fd;
-
-    struct socket_info *info =
-        bpf_map_lookup_elem(&sockets, &key);
-
-    if (!info || info->protocol != IPPROTO_UDP) {
-        return 0;
-    }
-
-    struct msghdr msg = {};
-
-    if (bpf_probe_read_user(
-            &msg,
-            sizeof(msg),
-            (void *)ctx->args[1]) != 0) {
-        return 0;
-            }
-
-    if (!msg.msg_name) {
-        return 0;
-    }
-
-    struct event e = {};
-
-    if (parse_user_sockaddr(msg.msg_name, &e) < 0) {
-        return 0;
-    }
-
-    e.pid = pid;
-    e.tid = (__u32)id;
-    e.fd = fd;
-    e.type = info->type;
-    e.protocol = IPPROTO_UDP;
-
-    bpf_get_current_comm(e.comm, sizeof(e.comm));
-
-    bpf_map_update_elem(
-        &pending_sendmsg,
-        &id,
-        &e,
-        BPF_ANY
-    );
-
-    return 0;
-}
-
-SEC("tp/syscalls/sys_exit_sendmsg")
-int handle_exit_sendmsg(struct trace_event_raw_sys_exit *ctx)
-{
-    __u64 id = bpf_get_current_pid_tgid();
-
-    struct event *e =
-        bpf_map_lookup_elem(&pending_sendmsg, &id);
-
-    if (!e) {
-        return 0;
-    }
-
-    long ret = ctx->ret;
-
-    if (ret >= 0) {
-        e->result = 0;
-
-        struct flow_key fkey = {};
-        fkey.family = e->family;
-        fkey.remote_port = e->remote_port;
-
-        __builtin_memcpy(
-            fkey.remote_addr,
-            e->remote_addr,
-            sizeof(fkey.remote_addr)
-        );
-
-        struct flow_metrics zero = {};
-
-        long added = bpf_map_update_elem(
-            &flow_mtr,
-            &fkey,
-            &zero,
-            BPF_NOEXIST
-        );
-
-        if (added == 0) {
-            bpf_ringbuf_output(
-                &events,
-                e,
-                sizeof(*e),
-                0
-            );
+    if (key.family == AF_INET) {
+        struct sockaddr_in addr4 = {};
+        if (bpf_probe_read_kernel(&addr4, sizeof(addr4), addr) < 0) {
+            return 0;
         }
+
+        key.remote_port = bpf_ntohs(addr4.sin_port);
+
+        __builtin_memcpy(key.remote_addr, &addr4.sin_addr, sizeof(addr4.sin_addr));
+    } else if (key.family == AF_INET6) {
+        struct sockaddr_in6 addr6 = {};
+        if (bpf_probe_read_kernel(&addr6, sizeof(addr6), addr) < 0) {
+            return 0;
+        }
+
+        key.remote_port = bpf_ntohs(addr6.sin6_port);
+
+        __builtin_memcpy(key.remote_addr, &addr6.sin6_addr, sizeof(addr6.sin6_addr));
     } else {
-        e->result = (int)ret;
+        return 0;
     }
 
-    bpf_map_delete_elem(&pending_sendmsg, &id);
+    struct flow_metrics zero = {};
+    bpf_map_update_elem(&flow_mtr, &key, &zero, BPF_NOEXIST );
 
+    return 0;
+}
+
+SEC("fentry/udp_sendmsg")
+int BPF_PROG(handle_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+    udp_check(msg);
+    return 0;
+}
+
+SEC("fentry/udpv6_sendmsg")
+int BPF_PROG(handle_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+    udp_check(msg);
     return 0;
 }
 
