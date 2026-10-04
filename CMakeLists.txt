@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2)
 project(
         flowray
-        VERSION 0.3.0
+        VERSION 0.4.0
         DESCRIPTION "Linux application network activity analyzer"
         LANGUAGES CXX
 )
@@ -17,7 +17,14 @@ FetchContent_Declare(
         GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(CLI11)
+FetchContent_Declare(
+        ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+        GIT_TAG v7.0.3
+        GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(CLI11 ftxui)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
@@ -64,14 +71,14 @@ add_executable(flowray main.cpp
         headers/data.h
         src/proc_name.cpp
         headers/proc_name.h
-        ebpf/ebpf_monitor.h
-#        ebpf/ebpf_connect.bpf.c
         ebpf/ebpf.h
         ebpf/ebpf_monitor.cpp
         ebpf/ebpf_connect.skel.h
+        src/output_ftxui.cpp
+        headers/output_ftxui.h
 )
 
-target_link_libraries(flowray PRIVATE CLI11::CLI11 PkgConfig::LIBBPF)
+target_link_libraries(flowray PRIVATE CLI11::CLI11 PkgConfig::LIBBPF ftxui::screen ftxui::dom ftxui::component)
 
 target_compile_options(flowray PRIVATE
         -Wall
