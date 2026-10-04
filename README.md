@@ -1,4 +1,4 @@
-# FlowRay v0.4.0-1
+# FlowRay v0.4.0-2
 
 Linux application network activity analyzer.
 
@@ -7,7 +7,7 @@ FlowRay analyzes Linux network sockets and maps them back to the processes that 
 The project currently provides two monitoring backends:
 
 - classic socket monitoring using Linux socket diagnostics;
-- an experimental eBPF backend (syscall tracepoints and TCX ingress/egress hooks).
+- an experimental eBPF backend.
 
 ## Requirements
 
@@ -18,16 +18,16 @@ The eBPF backend requires:
 - Linux 6.6+
 - kernel BTF at `/sys/kernel/btf/vmlinux`
 - sudo access
-- 512 MiB RAM to run FlowRay (recommended)
+- 512 MiB RAM to run flowray (recommended)
 
-> Linux 6.6+ is required because FlowRay uses TCX for packet accounting.
+> Linux 6.6+ is required because flowray uses TCX for packet accounting.
 
 ### Arch Linux
 
 Install dependencies:
 
 ```
-sudo pacman -S --needed base-devel git cmake clang llvm libbpf bpf cli11
+sudo pacman -S base-devel git cmake clang bpf cli11
 ```
 
 
@@ -37,8 +37,8 @@ sudo pacman -S --needed base-devel git cmake clang llvm libbpf bpf cli11
 Clone and build:
 
 ```bash
-git clone https://github.com/Stelour/FlowRay.git
-cd FlowRay
+git clone https://github.com/Stelour/flowray.git
+cd flowray
 
 cmake -S . -B build
 cmake --build build
