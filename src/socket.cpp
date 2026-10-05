@@ -105,7 +105,7 @@ static SocketInfo parse_diag(const inet_diag_msg *diag, DiagQuery socket_diag_qu
 
 static int receive_response(int fd,
     const std::unordered_map<std::uint32_t, std::set<std::uint32_t>>& target_inodes,
-    std::vector<SocketInfo>& sockets,
+    std::vector<SocketInfo> sockets,
     DiagQuery socket_diag_query) {
 
     // alignas(nlmsghdr) char buffer[8192]{};
