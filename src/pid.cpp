@@ -2,6 +2,7 @@
 #include "../headers/output.h"
 #include "../headers/socket.h"
 #include "../headers/proc_name.h"
+#include "../headers/output_ftxui.h"
 
 #include <filesystem>
 #include <fstream>
@@ -147,45 +148,58 @@ static void update_live_state(std::vector<LiveSocket>& live_sockets, const std::
     }
 }
 
+status_msg update_live_data(
+    std::vector<std::uint32_t>& pids,
+    bool pid_tree, const std::string& proc_name,
+    std::vector<ProcessInfo>& processes,
+    std::vector<LiveSocket>& live_sockets) {
+    if(!proc_name.empty()) {
+        pids = find_pids_by_name(proc_name);
+    }
+
+    std::vector<ProcessInfo> new_processes;
+    std::vector<SocketInfo> new_sockets;
+
+    if (get_proc_sockets(pids, pid_tree, new_processes, new_sockets) != status_msg::success) {
+        return status_msg::error;
+    }
+
+    update_live_state(live_sockets, new_sockets);
+
+    // print_socket_diff(new_sockets, sockets, pid_detail);
+    //
+    // processes = std::move(new_processes);
+    // sockets = std::move(new_sockets);
+    return status_msg::success;
+}
+
 static status_msg start_live_mode(
     std::vector<std::uint32_t> pids,
     bool pid_tree, bool pid_detail, const std::string& proc_name
     ) {
     std::vector<LiveSocket> live_sockets;
-
+    std::vector<ProcessInfo> processes;
 
     while (true) {
-        if(!proc_name.empty()) {
-            pids = find_pids_by_name(proc_name);
-        }
-
-        std::vector<ProcessInfo> new_processes;
-        std::vector<SocketInfo> new_sockets;
-
-        if (get_proc_sockets(pids, pid_tree, new_processes, new_sockets) != status_msg::success) {
+        if (update_live_data(pids, pid_tree, proc_name, processes, live_sockets) != status_msg::success) {
             continue;
         }
 
-        update_live_state(live_sockets, new_sockets);
-
-        // print_socket_diff(new_sockets, sockets, pid_detail);
-        //
-        // processes = std::move(new_processes);
-        // sockets = std::move(new_sockets);
-
         std::cout << "\033[2J\033[H" << std::flush;
         std::cout << "FlowRay live mode" << std::endl << std::endl;
-        print_process_info(new_processes);
+        print_process_info(processes);
         print_live_table(live_sockets, pid_detail);
 
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
-status_msg start_pid(const std::vector<std::uint32_t>& pids, bool pid_tree, bool pid_detail, bool proc_live, const std::string& proc_name) {
+status_msg start_pid(const std::vector<std::uint32_t>& pids, bool pid_tree, bool pid_detail, bool proc_live, const std::string& proc_name, bool live_print) {
     if (proc_live) {
-        // std::cout << std::endl;
-        return start_live_mode(pids, pid_tree, pid_detail, proc_name);
+        if (live_print) {
+            return start_live_mode(pids, pid_tree, pid_detail, proc_name);
+        }
+        return output_table_socket_live(pids, pid_tree, pid_detail, proc_name);
     }
 
     std::vector<ProcessInfo> processes;

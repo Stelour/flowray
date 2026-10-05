@@ -54,6 +54,13 @@ int main(int argc, char* argv[]) {
         "ebpf"
         );
 
+    bool live_print = false;
+    app.add_flag(
+        "--print,-r",
+        live_print,
+        "live_print"
+        );
+
     op_pid->excludes(op_name);
     op_name->excludes(op_pid);
 
@@ -71,7 +78,7 @@ int main(int argc, char* argv[]) {
     if (*op_pid) {
         if (ebpf) {
             ebpf_start({pid}, proc_name, pid_tree);
-        } else if (start_pid({pid}, pid_tree, pid_detail, proc_live, proc_name) != status_msg::success) {
+        } else if (start_pid({pid}, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;
             return -1;
         }
@@ -83,7 +90,7 @@ int main(int argc, char* argv[]) {
         }
         if (ebpf) {
             ebpf_start(pids, proc_name, pid_tree);
-        } else if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name) != status_msg::success) {
+        } else if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;
             return -1;
         }
