@@ -169,6 +169,7 @@ int handle_connect_exit(struct trace_event_raw_sys_exit *ctx) {
         struct flow_key fkey = {};
         fkey.family = pend->family;
         fkey.remote_port = pend->remote_port;
+        fkey.protocol = pend->protocol;
         __builtin_memcpy(fkey.remote_addr, pend->remote_addr, sizeof(fkey.remote_addr));
         struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
         if (!m) {
@@ -453,6 +454,7 @@ static int udp_check(struct msghdr *msg) {
     }
 
     struct flow_key key = {};
+    key.protocol = IPPROTO_UDP;
 
     if (bpf_probe_read_kernel(&key.family, sizeof(key.family), addr) < 0) {
         return 0;
@@ -562,6 +564,7 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
         }
 
         fkey.family = AF_INET;
+        fkey.protocol = ip4.protocol;
 
         __u32 ip_hdr_len = ip4.ihl * 4;
         if (ip_hdr_len < sizeof(struct iphdr)) {
@@ -593,6 +596,8 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
          if (ip6.nexthdr != IPPROTO_TCP && ip6.nexthdr != IPPROTO_UDP) {
              return TCX_NEXT;
          }
+
+        fkey.protocol = ip6.nexthdr;
 
         int ret = bpf_skb_load_bytes_relative(skb, sizeof(struct ipv6hdr), &ports, sizeof(ports), BPF_HDR_START_NET);
 

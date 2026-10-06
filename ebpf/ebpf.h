@@ -36,6 +36,7 @@ struct flow_key {
     unsigned short family;
     unsigned short remote_port;
     unsigned char remote_addr[FLOWRAY_ADDR_LEN];
+    unsigned int protocol;
 };
 
 struct flow_metrics {

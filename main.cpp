@@ -1,12 +1,13 @@
 #include "headers/pid.h"
 #include "headers/proc_name.h"
 #include "ebpf/ebpf_monitor.h"
+#include "headers/output_ftxui.h"
 
 #include <CLI/CLI.hpp>
 #include <iostream>
 
 /*
-TODO: output with ncurses for --live; flag --ring-bufer-size; flag --socket; dns request;
+TODO: flag --ring-bufer-size; dns request;
 */
 
 int main(int argc, char* argv[]) {
@@ -89,7 +90,11 @@ int main(int argc, char* argv[]) {
             return -1;
         }
         if (ebpf) {
-            ebpf_start(pids, proc_name, pid_tree);
+            if (live_print) {
+                ebpf_start(pids, proc_name, pid_tree);
+            } else {
+                output_ebpf_live(pids, proc_name, pid_tree, pid_detail);
+            }
         } else if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;
             return -1;

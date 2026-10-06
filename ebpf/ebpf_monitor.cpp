@@ -233,6 +233,7 @@ static int seed_ex(struct ebpf_connect_bpf* skel, const std::vector<std::uint32_
         struct flow_key key{};
         key.family = sock.family;
         key.remote_port = sock.remote_port;
+        key.protocol = sock.protocol;
 
         if (inet_pton(sock.family, sock.remote_ip.c_str(), key.remote_addr) != 1) {
             continue;
@@ -415,8 +416,12 @@ ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::strin
     return m;
 }
 
-ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector<ebpf_traffic>& traffic) {
+ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector<ebpf_traffic>& traffic, bool* traffic_updated = nullptr) {
     events.clear();
+
+    if (traffic_updated) {
+        *traffic_updated = false;
+    }
 
     if (!m) {
         return ebpf_step::error;
@@ -448,6 +453,11 @@ ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector
         int result = update_proc(m->skel, m->pids, m->pid_tree, m->proc_name);
 
         read_flow_metrics(m->skel, traffic);
+
+        if (traffic_updated) {
+            *traffic_updated = true;
+        }
+
         m->last_scan = now;
 
         if (result != 0) {
@@ -493,7 +503,7 @@ int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_n
 
             if (inet_ntop(e.family, e.remote_addr, ip, sizeof(ip))) {
                 std::cout << "PID: " << e.pid << " RESULT: " << res_from_struct << " FAMILY: " << family_to_string(e.family)
-                << " PROTOCOL: " << protocol_to_string(e.protocol) << " ADDR: " << ip << ":" << ntohs(e.remote_port) << '\n';
+                << " PROTOCOL: " << protocol_to_string(e.protocol) << " ADDR: " << ip << ":" << e.remote_port << '\n';
             }
         }
 

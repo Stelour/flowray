@@ -1,5 +1,6 @@
 #include "../headers/output_ftxui.h"
 #include "../headers/pid.h"
+#include "../ebpf/ebpf_monitor.h"
 
 #include <ftxui/component/app.hpp>             // for Component, App
 #include <ftxui/component/component.hpp>       // for Toggle, Renderer, Vertical
@@ -15,6 +16,8 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <arpa/inet.h>
+#include <unordered_map>
 
 using namespace ftxui;
 
@@ -141,6 +144,13 @@ static Element socket_header(bool active, bool pid_detail) {
 
 status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
     bool pid_tree, bool pid_detail, const std::string& proc_name) {
+    std::string nm = proc_name;
+    if (proc_name.empty()) {
+        for (auto pid : pids) {
+            nm = std::to_string(pid);
+        }
+    }
+
     std::vector<LiveSocket> live_sockets;
     std::vector<ProcessInfo> processes;
     update_live_data(pids, pid_tree, proc_name, processes, live_sockets);
@@ -178,8 +188,9 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
 
     auto component = Renderer(menus, [&] {
         return vbox({
-            text("FLOWRAY - LIVE SOCKETS") | color(Color::Purple) | hcenter,
-            text("PIDs: " + std::to_string(processes.size())),
+            text("FLOWRAY - LIVE SOCKETS") | color(Color::Pink3) | hcenter,
+            text(""),
+            text("PIDs (" + nm + ") : " + std::to_string(processes.size())),
             paragraph(" - " + print_process_info(processes)),
             text(""),
             text("Sockets: " + std::to_string(live_sockets.size())),
@@ -187,11 +198,15 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
             separator(),
             text("ACTIVE (" + std::to_string(active_rows.size()) + ")") | hcenter,
             socket_header(true, pid_detail),
+            text(""),
             active_menu->Render() | vscroll_indicator | frame | flex,
+            text(""),
             separator(),
             text("INACTIVE (" + std::to_string(inactive_rows.size()) + ")") | hcenter,
             socket_header(false, pid_detail),
+            text(""),
             inactive_menu->Render() | vscroll_indicator | frame | flex,
+            text(""),
             text("↑/↓ - select | Tab - switch list | q/Esc - exit") | dim,
         });
     });
@@ -230,4 +245,251 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
     }
 
     return status_msg::success;
+}
+
+static std::string ebpf_event_row(const event& e) {
+    char ip[INET6_ADDRSTRLEN]{};
+    inet_ntop(e.family, e.remote_addr, ip, sizeof(ip));
+
+    std::string result;
+    if (e.result == 0) {
+        result = "SUCCESS";
+    } else if (e.result == -EINPROGRESS) {
+        result = "PENDING";
+    } else {
+        result = "FAILED";
+    }
+
+    std::string remote = e.family == AF_INET6 ? "[" + std::string(ip) + "]" : std::string(ip);
+    // remote += ":" + std::to_string(e.remote_port);
+
+    std::ostringstream out;
+    out << std::left << std::setw(10) << e.pid << std::setw(12) << result
+    << std::setw(10) << family_to_string(e.family) << std::setw(10) << protocol_to_string(e.protocol) << remote;
+
+    return out.str();
+}
+
+static Element ebpf_event_header() {
+    return hbox({
+        text("  "),
+        text("PID") | size(WIDTH, EQUAL, 10),
+        text("RESULT") | size(WIDTH, EQUAL, 12),
+        text("FAMILY") | size(WIDTH, EQUAL, 10),
+        text("PROTO") | size(WIDTH, EQUAL, 10),
+        text("REMOTE IP"),
+    });
+}
+
+static std::string ebpf_traffic_row(const ebpf_traffic& traffic, double rx_speed,
+    double tx_speed, double rx_packets, double tx_packets, bool pid_detail) {
+    const auto& m = traffic.metrics;
+    const auto& key = traffic.key;
+
+    char ip[INET6_ADDRSTRLEN]{};
+    inet_ntop(key.family, key.remote_addr, ip, sizeof(ip));
+
+    std::string remote = ip;
+    if (pid_detail) {
+        if (key.family == AF_INET6) {
+            remote = "[" + remote + "]";
+        }
+        remote += ":" + std::to_string(key.remote_port);
+    }
+
+    std::ostringstream out;
+    out << std::left << std::fixed << std::setprecision(1);
+    if (pid_detail) {
+        out << std::setw(10) << protocol_to_string(key.protocol)
+        << std::setw(10) << family_to_string(key.family);
+    }
+    out << std::setw(40) << remote
+    << std::setw(30)
+    << (std::to_string(m.rx_bytes / 1024) + " KiB (" + std::to_string(static_cast<unsigned long long>(rx_speed / 1024)) + " KiB/s)")
+    << std::setw(30)
+    << (std::to_string(m.tx_bytes / 1024) + " KiB (" + std::to_string(static_cast<unsigned long long>(tx_speed / 1024)) + " KiB/s)")
+    << std::setw(25)
+    << (std::to_string(m.rx_packets) + " (" + std::to_string(static_cast<unsigned long long>(rx_packets)) + " pkt/s)")
+    << std::setw(25)
+    << (std::to_string(m.tx_packets) + " (" + std::to_string(static_cast<unsigned long long>(tx_packets)) + " pkt/s)");
+
+    return out.str();
+}
+
+static Element ebpf_traffic_header(bool pid_detail) {
+    Elements columns = {text("  ")};
+    if (pid_detail) {
+        columns.push_back(text("PROTO") | size(WIDTH, EQUAL, 10));
+        columns.push_back(text("FAMILY") | size(WIDTH, EQUAL, 10));
+    }
+    columns.push_back(text(pid_detail ? "REMOTE IP:PORT" : "REMOTE IP") | size(WIDTH, EQUAL, 40));
+    columns.push_back(text("RX KiB ↓") | size(WIDTH, EQUAL, 30));
+    columns.push_back(text("TX KiB ↑") | size(WIDTH, EQUAL, 30));
+    columns.push_back(text("RX pkt ↓") | size(WIDTH, EQUAL, 25));
+    columns.push_back(text("TX pkt ↑") | size(WIDTH, EQUAL, 25));
+    return hbox(columns);
+}
+
+static void update_ebpf_rows(const std::vector<ebpf_traffic>& traffic,
+    std::unordered_map<std::string, flow_metrics>& previous,
+    std::chrono::steady_clock::time_point& last_sample,
+    bool pid_detail, std::vector<std::string>& traffic_rows) {
+
+    auto now = std::chrono::steady_clock::now();
+    double seconds = std::chrono::duration<double>(now - last_sample).count();
+    std::unordered_map<std::string, ebpf_traffic> grouped;
+
+    for (const auto& row : traffic) {
+        char ip[INET6_ADDRSTRLEN]{};
+        if (!inet_ntop(row.key.family, row.key.remote_addr, ip, sizeof(ip))) {
+            continue;
+        }
+        std::string key = ip;
+        if (pid_detail) {
+            key += "/" + std::to_string(row.key.protocol) + "/" + std::to_string(row.key.remote_port);
+        }
+        auto& sum = grouped[key];
+        sum.key = row.key;
+        sum.metrics.rx_bytes += row.metrics.rx_bytes;
+        sum.metrics.tx_bytes += row.metrics.tx_bytes;
+        sum.metrics.rx_packets += row.metrics.rx_packets;
+        sum.metrics.tx_packets += row.metrics.tx_packets;
+    }
+
+    std::vector<std::pair<std::uint64_t, std::string>> rows;
+    for (const auto& [key, row] : grouped) {
+        const auto& m = row.metrics;
+        auto& old = previous.try_emplace(key, m).first->second;
+        auto rate = [&](auto value, auto before) {
+            return seconds > 0 && value >= before
+                ? double(value - before) / seconds : 0.0;
+        };
+        double rx = rate(m.rx_bytes, old.rx_bytes);
+        double tx = rate(m.tx_bytes, old.tx_bytes);
+        rows.emplace_back(rx + tx, ebpf_traffic_row(row, rx, tx,
+            rate(m.rx_packets, old.rx_packets),
+            rate(m.tx_packets, old.tx_packets), pid_detail));
+        old = m;
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+        return a.first != b.first ? a.first > b.first : a.second < b.second;
+    });
+
+    traffic_rows.clear();
+    for (const auto& row : rows) {
+        traffic_rows.push_back(row.second);
+    }
+
+    last_sample = now;
+}
+
+status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, bool pid_detail) {
+    std::string nm = proc_name;
+    if (proc_name.empty()) {
+        for (auto pid : pids) {
+            nm += std::to_string(pid);
+        }
+    }
+
+    auto *monitor = ebpf_open(pids, proc_name, pid_tree);
+    if (!monitor) {
+        return status_msg::error;
+    }
+
+    std::vector<ProcessInfo> processes;
+    std::vector<SocketInfo> sockets;
+
+    if (get_proc_sockets(pids, pid_tree, processes, sockets, nullptr) != status_msg::success) {
+        ebpf_close(monitor);
+        return status_msg::error;
+    }
+
+    std::vector<event> events;
+    std::vector<ebpf_traffic> traffic;
+    std::vector<std::string> traffic_rows;
+    std::vector<std::string> event_rows;
+    int selected_traffic = 0;
+    int selected_event = 0;
+
+    auto app = App::Fullscreen();
+    auto traffic_menu = Menu(&traffic_rows, &selected_traffic);
+    auto event_menu = Menu(&event_rows, &selected_event);
+    auto menus = Container::Vertical({traffic_menu, event_menu});
+
+    auto component = Renderer(menus, [&] {
+        return vbox({
+            text("FLOWRAY - TRAFFIC ANALYZER") | color(Color::Pink3) | hcenter,
+            text(""),
+            text("PIDs (" + nm + ") : " + std::to_string(processes.size())),
+            paragraph(" - " + print_process_info(processes)),
+            text(""),
+            separator(),
+            text("TRAFFIC (" + std::to_string(traffic_rows.size()) + ")") | hcenter,
+            text(""),
+            ebpf_traffic_header(pid_detail),
+            text(""),
+            traffic_menu->Render() | vscroll_indicator | frame | flex,
+            separator(),
+            text("CONNECTION LOGS (" + std::to_string(event_rows.size()) + ")") | hcenter,
+            ebpf_event_header(),
+            event_menu->Render() | vscroll_indicator | frame | size(HEIGHT, EQUAL, 10),
+            text(""),
+            text("↑/↓ - select | Tab - switch list | q/Esc - exit") | dim,
+        });
+    });
+
+    bool act_foc = true;
+    traffic_menu->TakeFocus();
+    component |= CatchEvent([&](const Event& event) -> bool {
+        if (event == Event::Character('q') || event == Event::Escape) {
+            app.Exit();
+            return true;
+        }
+
+        if (event == Event::Tab || event == Event::TabReverse) {
+            act_foc = !act_foc;
+            if (act_foc) {
+                traffic_menu->TakeFocus();
+            } else {
+                event_menu->TakeFocus();
+            }
+            return true;
+        }
+        return false;
+    });
+
+    std::unordered_map<std::string, flow_metrics> previous;
+    auto last_sample = std::chrono::steady_clock::now();
+    status_msg result = status_msg::success;
+
+    Loop loop(&app, component);
+    while (!loop.HasQuitted()) {
+        bool traffic_updated = false;
+        auto step = ebpf_get_step(monitor, events, traffic, &traffic_updated);
+
+        for (const auto& e : events) {
+            event_rows.push_back(ebpf_event_row(e));
+        }
+
+        if (traffic_updated) {
+            update_ebpf_rows(traffic, previous, last_sample, pid_detail, traffic_rows);
+            selected_traffic = std::clamp(selected_traffic, 0, traffic_rows.empty() ? 0 : int(traffic_rows.size()) - 1);
+        }
+
+        if (!events.empty() || traffic_updated) {
+            app.RequestAnimationFrame();
+        }
+
+        if (step != ebpf_step::updated) {
+            result = step == ebpf_step::error ? status_msg::error : status_msg::success;
+            break;
+        }
+
+        loop.RunOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    ebpf_close(monitor);
+    return result;
 }

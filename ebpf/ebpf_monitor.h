@@ -22,7 +22,7 @@ enum class ebpf_step {
 
 ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree);
 
-ebpf_step ebpf_get_step(ebpf_monitor* monitor, std::vector<event>& events, std::vector<ebpf_traffic>& traffics);
+ebpf_step ebpf_get_step(ebpf_monitor* monitor, std::vector<event>& events, std::vector<ebpf_traffic>& traffics, bool* traffic_updated);
 
 void ebpf_close(ebpf_monitor* monitor);
 
