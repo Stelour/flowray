@@ -61,7 +61,6 @@ status_msg get_proc_sockets(
     ) {
     processes.clear();
     sockets.clear();
-    // std::vector<std::uint32_t> procs_pid = pids | std::ranges::to<std::vector>();
     std::vector<std::uint32_t> procs_pid = pids;
     for (auto pid : pids) {
         std::string dir_path = "/proc/" + std::to_string(pid);

@@ -40,7 +40,7 @@ static std::string family_to_string(int family) {
     }
 }
 
-void print_process_info(std::span<ProcessInfo> processes) {
+void print_process_info(const std::vector<ProcessInfo>& processes) {
     std::cout << "Processes (" << processes.size() << ")" << std::endl;
     for (const auto& process : processes) {
         std::cout << "\t" << process.name << "[" << process.pid <<  "]" << std::endl;
@@ -48,7 +48,7 @@ void print_process_info(std::span<ProcessInfo> processes) {
     std::cout << std::endl;
 }
 
-void print_socket_info(std::span<SocketInfo> sockets, bool detail) {
+void print_socket_info(const std::vector<SocketInfo>& sockets, bool detail) {
     std::cout << "Sockets: " << sockets.size() << std::endl << std::endl;
 
     std::cout << std::left
@@ -147,7 +147,7 @@ static void print_live_socket_info(const LiveSocket& live_socket, bool detail) {
     std::cout << std::endl;
 }
 
-void print_live_table(std::span<LiveSocket> sockets, bool detail) {
+void print_live_table(const std::vector<LiveSocket>& sockets, bool detail) {
     int act = 0;
 
     for (const auto& socket : sockets) {

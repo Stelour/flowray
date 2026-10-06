@@ -7,7 +7,6 @@
 #include <fstream>
 #include <cctype>
 #include <iostream>
-// #include <algorithm>
 
 static bool is_number(const std::string& s) {
     if (s.empty()) return false;
