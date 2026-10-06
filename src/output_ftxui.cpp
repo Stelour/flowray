@@ -18,6 +18,7 @@
 #include <sstream>
 #include <arpa/inet.h>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace ftxui;
 
@@ -247,9 +248,18 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
     return status_msg::success;
 }
 
-static std::string ebpf_event_row(const event& e) {
+static std::string ebpf_event_row(const event& e, std::unordered_map<std::string, std::string>& first_seen) {
     char ip[INET6_ADDRSTRLEN]{};
     inet_ntop(e.family, e.remote_addr, ip, sizeof(ip));
+
+    auto [it, inserted] = first_seen.try_emplace(ip);
+
+    if (inserted) {
+        auto now = std::time(nullptr);
+        char time[9]{};
+        std::strftime(time, sizeof(time), "%H:%M:%S", std::localtime(&now));
+        it->second = time;
+    }
 
     std::string result;
     if (e.result == 0) {
@@ -261,11 +271,14 @@ static std::string ebpf_event_row(const event& e) {
     }
 
     std::string remote = e.family == AF_INET6 ? "[" + std::string(ip) + "]" : std::string(ip);
-    // remote += ":" + std::to_string(e.remote_port);
+    remote += ":" + std::to_string(e.remote_port);
 
     std::ostringstream out;
-    out << std::left << std::setw(10) << e.pid << std::setw(12) << result
-    << std::setw(10) << family_to_string(e.family) << std::setw(10) << protocol_to_string(e.protocol) << remote;
+    out << std::left << std::setw(13) << it->second
+    << std::setw(10) << e.pid << std::setw(12) << result
+    << std::setw(10) << family_to_string(e.family)
+    << std::setw(10) << protocol_to_string(e.protocol)
+    << remote;
 
     return out.str();
 }
@@ -273,6 +286,7 @@ static std::string ebpf_event_row(const event& e) {
 static Element ebpf_event_header() {
     return hbox({
         text("  "),
+        text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
         text("PID") | size(WIDTH, EQUAL, 10),
         text("RESULT") | size(WIDTH, EQUAL, 12),
         text("FAMILY") | size(WIDTH, EQUAL, 10),
@@ -366,7 +380,7 @@ static void update_ebpf_rows(const std::vector<ebpf_traffic>& traffic,
         };
         double rx = rate(m.rx_bytes, old.rx_bytes);
         double tx = rate(m.tx_bytes, old.tx_bytes);
-        rows.emplace_back(rx + tx, ebpf_traffic_row(row, rx, tx,
+        rows.emplace_back(m.rx_bytes + m.tx_bytes, ebpf_traffic_row(row, rx, tx,
             rate(m.rx_packets, old.rx_packets),
             rate(m.tx_packets, old.tx_packets), pid_detail));
         old = m;
@@ -416,6 +430,8 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
     auto traffic_menu = Menu(&traffic_rows, &selected_traffic);
     auto event_menu = Menu(&event_rows, &selected_event);
     auto menus = Container::Vertical({traffic_menu, event_menu});
+
+    std::unordered_map<std::string, std::string> first_seen;
 
     auto component = Renderer(menus, [&] {
         return vbox({
@@ -469,7 +485,7 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         auto step = ebpf_get_step(monitor, events, traffic, &traffic_updated);
 
         for (const auto& e : events) {
-            event_rows.push_back(ebpf_event_row(e));
+            event_rows.push_back(ebpf_event_row(e, first_seen));
         }
 
         if (traffic_updated) {
