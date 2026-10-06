@@ -5,16 +5,20 @@
 #include <ftxui/component/component.hpp>       // for Toggle, Renderer, Vertical
 #include <ftxui/component/loop.hpp>            // for Loop
 #include <ftxui/dom/elements.hpp>              // for text, hbox, vbox, Element
+#include <ftxui/component/component_options.hpp>
 
 #include <netinet/in.h>
 #include <string>
 #include <chrono>
 #include <thread>
-#include <span>
+#include <algorithm>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 using namespace ftxui;
 
-static std::string print_process_info(const std::span<ProcessInfo> processes) {
+static std::string print_process_info(const std::vector<ProcessInfo>& processes) {
     std::string procs;
     for (const auto& process : processes) {
         procs += process.name + "[" + std::to_string(process.pid) + "]  ";
@@ -80,24 +84,60 @@ static std::string format_duration(const std::chrono::system_clock::duration& du
     return oss.str();
 }
 
-static Element output_sock_el(const LiveSocket& live_socket) {
-    const auto& socket = live_socket.socket;
-    int value = 0;
+// static Element output_sock_el(const LiveSocket& live_socket) {
+//     const auto& socket = live_socket.socket;
+//     int value = 0;
+//     std::string state = "-";
+//     if (live_socket.active) {
+//         value += 15;
+//         if (socket.protocol == IPPROTO_TCP) {
+//             state = state_to_string(socket.state);
+//         }
+//     }
+//     return hbox({
+//         text(protocol_to_string(socket.protocol)) | size(WIDTH, EQUAL, 10),
+//         text(family_to_string(socket.family))  | size(WIDTH, EQUAL, 10),
+//         text(socket.local_ip + ":" + std::to_string(socket.local_port))  | size(WIDTH, EQUAL, 30),
+//         text(socket.remote_ip + ":" + std::to_string(socket.remote_port))  | size(WIDTH, EQUAL, 30),
+//         text(live_socket.active ? state : "") | size(WIDTH, EQUAL, value),
+//         text(live_socket.active ? format_time(live_socket.first_seen) : format_time(live_socket.last_seen)) | size(WIDTH, EQUAL, 13),
+//         text(format_duration(live_socket.last_seen - live_socket.first_seen)) | size(WIDTH, EQUAL, 13)
+//     });
+// }
+
+static std::string socket_row(const LiveSocket& live) {
+    const auto& s = live.socket;
+
     std::string state = "-";
-    if (live_socket.active) {
-        value += 15;
-        if (socket.protocol == IPPROTO_TCP) {
-            state = state_to_string(socket.state);
+    if (live.active) {
+        if (s.protocol == IPPROTO_TCP) {
+            state = state_to_string(s.state);
         }
     }
+
+    std::ostringstream out;
+    out << std::left
+    << std::setw(10)  << protocol_to_string(s.protocol)
+    << std::setw(10)  << family_to_string(s.family)
+    << std::setw(30) << (s.local_ip + ":" + std::to_string(s.local_port))
+    << std::setw(30) << (s.remote_ip + ":" + std::to_string(s.remote_port))
+    << std::setw(15) << state
+    << std::setw(13) << format_time(live.active ? live.first_seen : live.last_seen)
+    << format_duration(live.last_seen - live.first_seen);
+
+    return out.str();
+}
+
+static Element socket_header(bool active) {
     return hbox({
-        text(protocol_to_string(socket.protocol)) | size(WIDTH, EQUAL, 10),
-        text(family_to_string(socket.family))  | size(WIDTH, EQUAL, 10),
-        text(socket.local_ip + ":" + std::to_string(socket.local_port))  | size(WIDTH, EQUAL, 30),
-        text(socket.remote_ip + ":" + std::to_string(socket.remote_port))  | size(WIDTH, EQUAL, 30),
-        text(live_socket.active ? state : "") | size(WIDTH, EQUAL, value),
-        text(live_socket.active ? format_time(live_socket.first_seen) : format_time(live_socket.last_seen)) | size(WIDTH, EQUAL, 13),
-        text(format_duration(live_socket.last_seen - live_socket.first_seen)) | size(WIDTH, EQUAL, 13)
+        text("  "),
+        text("PROTO") | size(WIDTH, EQUAL, 10),
+        text("FAMILY") | size(WIDTH, EQUAL, 10),
+        text("LOCAL") | size(WIDTH, EQUAL, 30),
+        text("REMOTE") | size(WIDTH, EQUAL, 30),
+        text("STATE") | size(WIDTH, EQUAL, 15),
+        text(active ? "FIRST SEEN" : "LAST SEEN") | size(WIDTH, EQUAL, 13),
+        text("LIFETIME"),
     });
 }
 
@@ -109,71 +149,132 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
 
     auto app = App::Fullscreen();
 
-    auto component = Renderer([&]{
-        int active_c = 0;
-        int inactive_c = 0;
+    std::vector<std::string> active_rows;
+    std::vector<std::string> inactive_rows;
+    int active_selected = 0;
+    int inactive_selected = 0;
+
+    auto refresh_rows = [&] {
+        active_rows.clear();
+        inactive_rows.clear();
+
         for (const auto& socket : live_sockets) {
-            if (socket.active) {
-                active_c++;
-            } else {
-                inactive_c++;
-            }
-        }
-        Elements sock_r_active;
-        Elements sock_r_inactive;
-        for (const auto& live_socket : live_sockets) {
-            if (live_socket.active) {
-                sock_r_active.push_back(output_sock_el(live_socket));
-            }
+            auto& rows = socket.active ? active_rows : inactive_rows;
+            rows.push_back(socket_row(socket));
         }
 
-        for (const auto& live_socket : live_sockets) {
-            if (!live_socket.active) {
-                sock_r_inactive.push_back(output_sock_el(live_socket));
-            }
-        }
+        auto clamp = [](int& selected, std::size_t count) {
+            selected = std::clamp(selected, 0, count ? int(count) - 1 : 0);
+        };
 
+        clamp(active_selected, active_rows.size());
+        clamp(inactive_selected, inactive_rows.size());
+    };
+
+    refresh_rows();
+
+    auto active_menu = Menu(&active_rows, &active_selected);
+    auto inactive_menu = Menu(&inactive_rows, &inactive_selected);
+
+    auto menus = Container::Vertical({active_menu, inactive_menu});
+
+    // auto component = Renderer(menus, [&]{
+    //     int active_c = 0;
+    //     int inactive_c = 0;
+    //     for (const auto& socket : live_sockets) {
+    //         if (socket.active) {
+    //             active_c++;
+    //         } else {
+    //             inactive_c++;
+    //         }
+    //     }
+    //     Elements sock_r_active;
+    //     Elements sock_r_inactive;
+    //     for (const auto& live_socket : live_sockets) {
+    //         if (live_socket.active) {
+    //             sock_r_active.push_back(output_sock_el(live_socket));
+    //         }
+    //     }
+    //
+    //     for (const auto& live_socket : live_sockets) {
+    //         if (!live_socket.active) {
+    //             sock_r_inactive.push_back(output_sock_el(live_socket));
+    //         }
+    //     }
+    //
+    //     return vbox({
+    //         text("FLOWRAY - LIVE SOCKETS") | color(Color::Purple) | hcenter,
+    //         text("PIDs: " + std::to_string(processes.size())),
+    //         paragraph(" - " + print_process_info(processes)),
+    //         text(""),
+    //         text("Sockets: " + std::to_string(live_sockets.size())),
+    //         text("Active Sockets: " + std::to_string(active_c)),
+    //         separator(),
+    //         text("ACTIVE (" + std::to_string(active_c) + ")") | hcenter,
+    //         text(""),
+    //         hbox ({
+    //             text(" PROTO") | size(WIDTH, EQUAL, 10),
+    //             text("FAMILY") | size(WIDTH, EQUAL, 10),
+    //             text("LOCAL") | size(WIDTH, EQUAL, 30),
+    //             text("REMOTE") | size(WIDTH, EQUAL, 30),
+    //             text("STATE") | size(WIDTH, EQUAL, 15),
+    //             text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
+    //             text("LIFETIME") | size(WIDTH, EQUAL, 13),
+    //         }),
+    //         // vbox(std::move(sock_r_active)) | flex,
+    //         active_menu->Render() | vscroll_indicator | frame | flex,
+    //         separator(),
+    //         text("INACTIVE (" + std::to_string(inactive_c) + ")") | hcenter,
+    //         text(""),
+    //         hbox ({
+    //             text(" PROTO") | size(WIDTH, EQUAL, 10),
+    //             text("FAMILY") | size(WIDTH, EQUAL, 10),
+    //             text("LOCAL") | size(WIDTH, EQUAL, 30),
+    //             text("REMOTE") | size(WIDTH, EQUAL, 30),
+    //             text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
+    //             text("LIFETIME") | size(WIDTH, EQUAL, 13),
+    //         }),
+    //         // vbox(std::move(sock_r_inactive)) | flex,
+    //         inactive_menu->Render() | vscroll_indicator | frame | flex,
+    //         text("q - exit") | dim,
+    //     });
+    // });
+
+    auto component = Renderer(menus, [&] {
         return vbox({
             text("FLOWRAY - LIVE SOCKETS") | color(Color::Purple) | hcenter,
-            separator(),
             text("PIDs: " + std::to_string(processes.size())),
             paragraph(" - " + print_process_info(processes)),
             text(""),
             text("Sockets: " + std::to_string(live_sockets.size())),
-            text("Active Sockets: " + std::to_string(active_c)),
+            text("Active Sockets: " + std::to_string(active_rows.size())),
             separator(),
-            text("ACTIVE (" + std::to_string(active_c) + ")") | hcenter,
-            text(""),
-            hbox ({
-                text("PROTO") | size(WIDTH, EQUAL, 10),
-                text("FAMILY") | size(WIDTH, EQUAL, 10),
-                text("LOCAL") | size(WIDTH, EQUAL, 30),
-                text("REMOTE") | size(WIDTH, EQUAL, 30),
-                text("STATE") | size(WIDTH, EQUAL, 15),
-                text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
-                text("LIFETIME") | size(WIDTH, EQUAL, 13),
-            }),
-            vbox(std::move(sock_r_active)) | flex,
+            text("ACTIVE (" + std::to_string(active_rows.size()) + ")") | hcenter,
+            socket_header(true),
+            active_menu->Render() | vscroll_indicator | frame | flex,
             separator(),
-            text("INACTIVE (" + std::to_string(inactive_c) + ")") | hcenter,
-            text(""),
-            hbox ({
-                text("PROTO") | size(WIDTH, EQUAL, 10),
-                text("FAMILY") | size(WIDTH, EQUAL, 10),
-                text("LOCAL") | size(WIDTH, EQUAL, 30),
-                text("REMOTE") | size(WIDTH, EQUAL, 30),
-                text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
-                text("LIFETIME") | size(WIDTH, EQUAL, 13),
-            }),
-            vbox(std::move(sock_r_inactive)) | flex,
-            text("q - exit") | dim,
-        }) | border;
+            text("INACTIVE (" + std::to_string(inactive_rows.size()) + ")") | hcenter,
+            socket_header(false),
+            inactive_menu->Render() | vscroll_indicator | frame | flex,
+            text("↑/↓ - select | Tab - switch list | q/Esc - exit") | dim,
+        });
     });
 
+    bool act_foc = true;
+    active_menu->TakeFocus();
     component |= CatchEvent([&](const Event& event) -> bool {
         if (event == Event::Character('q') || event == Event::Escape) {
             app.Exit();
             return true;
+        }
+
+        if (event == Event::Tab || event == Event::TabReverse) {
+            act_foc = !act_foc;
+            if (act_foc) {
+                active_menu->TakeFocus();
+            } else {
+                inactive_menu->TakeFocus();
+            }
         }
         return false;
     });
@@ -184,6 +285,7 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
     while (!loop.HasQuitted()) {
         if (lt + std::chrono::milliseconds(100) <= std::chrono::system_clock::now()) {
             update_live_data(pids, pid_tree, proc_name, processes, live_sockets);
+            refresh_rows();
             app.RequestAnimationFrame();
             lt = std::chrono::system_clock::now();
         }
