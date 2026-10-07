@@ -34,47 +34,52 @@ int main(int argc, char* argv[]) {
     app.add_flag(
         "--detail,-d",
         pid_detail,
-        "Show detailed socket information, including PID and inode"
+        "Show additional connection details"
         );
 
     bool proc_live = false;
-    app.add_flag(
+    CLI::Option *op_live = app.add_flag(
         "--live,-l",
         proc_live,
-        "Monitor socket changes continuously"
+        "Continuously monitor socket state changes"
         );
 
-    bool ebpf = false;
-    CLI::Option *op_ebpf = app.add_flag(
-        "--ebpf,-e",
-        ebpf,
-        "ebpf"
+    // bool ebpf = false;
+    // CLI::Option *op_ebpf = app.add_flag(
+    //     "--ebpf,-e",
+    //     ebpf,
+    //     "ebpf"
+    //     );
+
+    bool is_socket = false;
+    CLI::Option* op_socket = app.add_flag(
+        "--socket,-s",
+        is_socket,
+        "Use the classic socket diagnostics backend instead of eBPF"
         );
 
-    bool live_print = false;
+    bool print_term = false;
     app.add_flag(
-        "--print",
-        live_print,
-        "live_print"
+        "--stdout",
+        print_term,
+        "Print output to stdout instead of using the TUI"
         );
 
     std::uint64_t ring_buf_size = 256;
-    app.add_option(
+    CLI::Option* op_ring_size = app.add_option(
         "--ring-buffer-size",
         ring_buf_size,
-        "eBPF ring buffer size in KiB (min 256)"
+        "Set the eBPF event ring buffer size in KiB (power of two, min 256)"
         );
 
     op_pid->excludes(op_name);
     op_name->excludes(op_pid);
+    op_ring_size->excludes(op_socket);
+    op_live->needs(op_socket);
 
     CLI11_PARSE(app, argc, argv);
 
-    if (!(*op_pid || *op_name || *op_ebpf)) {
-        if (pid_tree || pid_detail) {
-            std::cerr << "ERROR: --tree and --detail require --pid or --name" << std::endl;
-            return -1;
-        }
+    if (!(*op_pid || *op_name)) {
         std::cout << app.help();
         return 0;
     }
@@ -82,39 +87,42 @@ int main(int argc, char* argv[]) {
     ring_buf_size *= 1024;
     if (ring_buf_size < 256 * 1024 || (ring_buf_size & (ring_buf_size - 1)) != 0) {
         std::cerr << "ERROR: --ring-buf-size incorrect num" << std::endl;
-        return -1;
+        return 1;
     }
 
-    if (*op_pid) {
-        if (ebpf) {
-            if (ebpf_start({pid}, proc_name, pid_tree, ring_buf_size) != 0) {
-                return -1;
-            }
-        } else if (start_pid({pid}, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
-            std::cerr << "ERROR: failed to start process pid " << std::endl;
-            return -1;
-        }
-    } else if (*op_name) {
-        auto pids = find_pids_by_name(proc_name);
+    std::vector<std::uint32_t> pids;
+    if (*op_name) {
+        pids = find_pids_by_name(proc_name);
         if (pids.empty()) {
             std::cerr << "ERROR: process " << proc_name << " not found" << std::endl;
-            return -1;
+            return 1;
         }
-        if (ebpf) {
-            if (live_print) {
-                if (ebpf_start(pids, proc_name, pid_tree, ring_buf_size) != 0) {
-                    return -1;
-                }
-            } else {
-                if (output_ebpf_live(pids, proc_name, pid_tree, pid_detail, ring_buf_size) != status_msg::success) {
-                    return -1;
-                }
-            }
-        } else if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
-            std::cerr << "ERROR: failed to start process pid " << std::endl;
-            return -1;
-        }
+    } else if (*op_pid) {
+        pids = {pid};
+    }
 
+    if (pids.empty()) {
+        std::cerr << "ERROR: pid is clear" << std::endl;
+        return 1;
+    }
+
+    if (is_socket) {
+        if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, print_term) != status_msg::success) {
+            std::cerr << "ERROR: failed to start process pid " << std::endl;
+            return 1;
+        }
+    } else {
+        if (print_term) {
+            if (ebpf_start(pids, proc_name, pid_tree, ring_buf_size) != 0) {
+                std::cerr << "ERROR: failed to start ebpf " << std::endl;
+                return 1;
+            }
+        } else {
+            if (output_ebpf_live(pids, proc_name, pid_tree, pid_detail, ring_buf_size) != status_msg::success) {
+                std::cerr << "ERROR: failed to start live ebpf " << std::endl;
+                return 1;
+            }
+        }
     }
 
     return 0;
