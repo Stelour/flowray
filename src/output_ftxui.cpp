@@ -560,6 +560,7 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         if ((exp) && (lt2 + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
             if (export_ebpf_json(path, pids, proc_name, traffic, events_history) != status_msg::success) {
                 return status_msg::error;
+                break;
             }
             lt2 = std::chrono::system_clock::now();
         }
