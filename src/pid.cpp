@@ -64,16 +64,24 @@ status_msg get_proc_sockets(
     sockets.clear();
     std::vector<std::uint32_t> procs_pid = pids;
     for (auto pid : pids) {
-        std::string dir_path = "/proc/" + std::to_string(pid);
+        std::error_code ec;
+        bool exists = std::filesystem::is_directory(
+            "/proc/" + std::to_string(pid), ec
+        );
 
-        if (!check_pid_is_correct(dir_path)) {
-            std::cerr << "ERROR: incorrect PID " << pid << std::endl;
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+            std::cerr << "ERROR: cannot check PID " << pid << ": " << ec.message() << std::endl;
             return status_msg::error;
+        }
+
+        if (exists) {
+            procs_pid.push_back(pid);
         }
     }
 
     if (pid_tree) {
-        for (auto pid : pids) {
+        const auto roots = procs_pid;
+        for (auto pid : roots) {
             push_pid_tree(pid, procs_pid);
         }
         std::sort(procs_pid.begin(), procs_pid.end());
