@@ -339,7 +339,7 @@ void ebpf_close(ebpf_monitor* m) {
     delete m;
 }
 
-ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree) {
+ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size) {
     if (pids.empty()) {
         return nullptr;
     }
@@ -373,6 +373,13 @@ ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::strin
 
     m->skel = ebpf_connect_bpf__open();
     if (!m->skel) {
+        return fail();
+    }
+
+    int err = bpf_map__set_max_entries(m->skel->maps.events, ring_buf_size);
+
+    if (err) {
+        std::cerr << "Failed to set ring buffer size: " << ring_buf_size << '\n';
         return fail();
     }
 
@@ -468,8 +475,8 @@ ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector
     return ebpf_step::updated;
 }
 
-int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree) {
-    auto* m = ebpf_open(pids, proc_name, pid_tree);
+int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size) {
+    auto* m = ebpf_open(pids, proc_name, pid_tree, ring_buf_size);
     if (!m) {
         std::cerr << "Failed to start eBPF monitor\n";
         return 1;

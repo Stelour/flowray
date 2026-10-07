@@ -6,10 +6,6 @@
 #include <CLI/CLI.hpp>
 #include <iostream>
 
-/*
-TODO: flag --ring-bufer-size; dns request;
-*/
-
 int main(int argc, char* argv[]) {
     CLI::App app{"FlowRay - linux application network activity analyzer"};
 
@@ -57,9 +53,16 @@ int main(int argc, char* argv[]) {
 
     bool live_print = false;
     app.add_flag(
-        "--print,-r",
+        "--print",
         live_print,
         "live_print"
+        );
+
+    std::uint64_t ring_buf_size = 256;
+    app.add_option(
+        "--ring-buffer-size",
+        ring_buf_size,
+        "eBPF ring buffer size in KiB (min 256)"
         );
 
     op_pid->excludes(op_name);
@@ -76,9 +79,17 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    ring_buf_size *= 1024;
+    if (ring_buf_size < 256 * 1024 || (ring_buf_size & (ring_buf_size - 1)) != 0) {
+        std::cerr << "ERROR: --ring-buf-size incorrect num" << std::endl;
+        return -1;
+    }
+
     if (*op_pid) {
         if (ebpf) {
-            ebpf_start({pid}, proc_name, pid_tree);
+            if (ebpf_start({pid}, proc_name, pid_tree, ring_buf_size) != 0) {
+                return -1;
+            }
         } else if (start_pid({pid}, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;
             return -1;
@@ -91,9 +102,13 @@ int main(int argc, char* argv[]) {
         }
         if (ebpf) {
             if (live_print) {
-                ebpf_start(pids, proc_name, pid_tree);
+                if (ebpf_start(pids, proc_name, pid_tree, ring_buf_size) != 0) {
+                    return -1;
+                }
             } else {
-                output_ebpf_live(pids, proc_name, pid_tree, pid_detail);
+                if (output_ebpf_live(pids, proc_name, pid_tree, pid_detail, ring_buf_size) != status_msg::success) {
+                    return -1;
+                }
             }
         } else if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, live_print) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;

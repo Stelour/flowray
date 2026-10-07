@@ -20,12 +20,12 @@ enum class ebpf_step {
     error
 };
 
-ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree);
+ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size);
 
 ebpf_step ebpf_get_step(ebpf_monitor* monitor, std::vector<event>& events, std::vector<ebpf_traffic>& traffics, bool* traffic_updated);
 
 void ebpf_close(ebpf_monitor* monitor);
 
-int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree);
+int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size);
 
 #endif //FLOWRAY_EBPF_MONITOR_H
