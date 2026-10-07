@@ -1,4 +1,4 @@
-# flowray v1.0.0
+# flowray v1.0.0-1
 
 Linux application network activity analyzer.
 
@@ -71,8 +71,9 @@ And start using it:
 
 ### eBPF build files
 
-If you want to generate from source, keep in mind, for eBPF need to be generated two files:
+If you want to generate from source, keep in mind, for eBPF need to be generated 3 files:
 - ebpf/vmlinux.h
+- ebpf/ebpf_connect.bpf.o
 - ebpf/ebpf_connect.skel.h
 
 They are generated automatically by CMakeLists.txt during the build.
