@@ -11,7 +11,6 @@
 #include <iostream>
 #include <csignal>
 #include <cerrno>
-#include <cstdint>
 #include <string>
 #include <vector>
 #include <arpa/inet.h>
@@ -21,20 +20,25 @@
 #include <unordered_set>
 #include <net/if.h>
 #include <unordered_map>
-#include <sstream>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
+#include <sys/syscall.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 
-struct tcx_links {
-    unsigned int ifindex = 0;
-    std::string ifname;
-
-    bpf_link* ingress = nullptr;
-    bpf_link* egress = nullptr;
-};
+// struct tcx_links {
+//     unsigned int ifindex = 0;
+//     std::string ifname;
+//
+//     bpf_link* ingress = nullptr;
+//     bpf_link* egress = nullptr;
+// };
 
 struct ebpf_monitor {
     ebpf_connect_bpf* skel = nullptr;
     ring_buffer* rb = nullptr;
-    std::vector<tcx_links> links;
+    std::vector<bpf_link*> links;
 
     std::unordered_set<std::uint32_t> pids;
     std::string proc_name;
@@ -122,8 +126,105 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
     return 0;
 }
 
+static int seed_ex(ebpf_connect_bpf* skel, const std::vector<std::uint32_t>& pids, bool pid_tree) {
+    std::vector<ProcessInfo> processes;
+    std::vector<SocketInfo> sockets;
+    SocketFdMap socket_fds;
+
+    if (get_proc_sockets(pids, pid_tree, processes, sockets, &socket_fds) != status_msg::success) {
+        std::cerr << "Failed to scan existing sockets" << std::endl;;
+        return -1;
+    }
+
+    int owners_fd = bpf_map__fd(skel->maps.socket_owners);
+    int sockets_fd = bpf_map__fd(skel->maps.sockets);
+
+    for (const auto& sock : sockets) {
+        if ((sock.family != AF_INET && sock.family != AF_INET6) || (sock.protocol != IPPROTO_TCP && sock.protocol != IPPROTO_UDP)) {
+            continue;
+        }
+
+        auto it = socket_fds.find(sock.inode);
+        if (it == socket_fds.end()) {
+            continue;
+        }
+
+        socket_info info{};
+        info.family = sock.family;
+        info.protocol = sock.protocol;
+        info.type = sock.protocol == IPPROTO_TCP ? SOCK_STREAM : SOCK_DGRAM;
+
+        for (const auto& ref : it->second) {
+            int pidfd = syscall(SYS_pidfd_open, ref.pid, 0);
+            if (pidfd < 0) {
+                if (errno == ESRCH) {
+                    continue;
+                }
+
+                std::cerr << "pidfd_open: " << strerror(errno) << std::endl;
+                return -1;
+            }
+
+            int fd = syscall(SYS_pidfd_getfd, pidfd, ref.fd, 0);
+            int error = fd < 0 ? errno : 0;
+            close(pidfd);
+            if (fd < 0) {
+                if (error == EBADF || error == ESRCH) {
+                    continue;
+                }
+                std::cerr << "pidfd_getfd: " << strerror(error) << std::endl;
+                return -1;
+            }
+
+            struct stat st{};
+            std::uint64_t cookie{};
+            socklen_t size = sizeof(cookie);
+
+            int result = fstat(fd, &st);
+            if (result == 0) {
+                result = getsockopt(fd, SOL_SOCKET, SO_COOKIE, &cookie, &size);
+            }
+            error = result < 0 ? errno : 0;
+            close(fd);
+
+            if (result < 0) {
+                if (error == ENOTSOCK) {
+                    continue;
+                }
+
+                std::cerr << "Failed to inspect socket: " << strerror(error) << std::endl;
+                return -1;
+            }
+
+            if (!S_ISSOCK(st.st_mode) || st.st_ino != sock.inode) {
+                continue;
+            }
+
+            if (size != sizeof(cookie) || cookie == 0) {
+                std::cerr << "Invalid socket cookie" << std::endl;
+                return -1;
+            }
+
+            std::uint32_t pid = ref.pid;
+            if (bpf_map_update_elem(owners_fd, &cookie, &pid, BPF_NOEXIST) != 0 && errno != EEXIST) {
+                std::cerr << "Failed to seed owner: " << strerror(errno) << std::endl;
+                return -1;
+            }
+
+            std::uint64_t key = (static_cast<std::uint64_t>(pid) << 32) | static_cast<std::uint32_t>(ref.fd);
+            if (bpf_map_update_elem(sockets_fd, &key, &info, BPF_ANY) != 0) {
+                std::cerr << "Failed to seed socket: " << strerror(errno) << std::endl;
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int update_proc(struct ebpf_connect_bpf* skel, std::unordered_set<std::uint32_t>& tracked_pids,
     bool pid_tree, const std::string& proc_name) {
+    std::vector<std::uint32_t> added_pids;
     if (tracked_pids.empty()) {
         return 1;
     }
@@ -147,14 +248,12 @@ static int update_proc(struct ebpf_connect_bpf* skel, std::unordered_set<std::ui
     }
 
     if (pid_tree) {
-        for (auto pid : cur) {
+        const auto roots = cur;
+        for (auto pid : roots) {
             push_pid_tree(pid, cur);
         }
         std::sort(cur.begin(), cur.end());
-        cur.erase(
-            std::unique(cur.begin(), cur.end()),
-            cur.end()
-        );
+        cur.erase(std::unique(cur.begin(), cur.end()), cur.end());
     }
 
     std::unordered_set current_pids(cur.begin(), cur.end());
@@ -182,110 +281,93 @@ static int update_proc(struct ebpf_connect_bpf* skel, std::unordered_set<std::ui
                 std::cerr << "Failed add PID " << pid << std::endl;
             } else {
                 tracked_pids.insert(pid);
+                added_pids.push_back(pid);
             }
         }
     }
 
-    return 0;
-}
-
-static int seed_ex(struct ebpf_connect_bpf* skel, const std::vector<std::uint32_t>& pids, bool pid_tree) {
-    std::vector<ProcessInfo> processes;
-    std::vector<SocketInfo> sockets;
-    SocketFdMap socket_fds;
-    if (get_proc_sockets(pids, pid_tree, processes, sockets, &socket_fds) != status_msg::success) {
-        std::cerr << "Failed to scan existing sockets" << std::endl;
+    if (!added_pids.empty() && seed_ex(skel, added_pids, false) != 0) {
         return -1;
     }
-    int flow_map_fd = bpf_map__fd(skel->maps.flow_mtr);
-    int socket_map_fd = bpf_map__fd(skel->maps.sockets);
-    for (const auto& sock : sockets) {
-        auto fd_it = socket_fds.find(sock.inode);
-        if (fd_it != socket_fds.end()) {
-            struct socket_info info{};
-            info.family = sock.family;
-            info.protocol = sock.protocol;
-            if (sock.protocol == IPPROTO_TCP) {
-                info.type = SOCK_STREAM;
-            }
-            else if (sock.protocol == IPPROTO_UDP) {
-                info.type = SOCK_DGRAM;
-            }
-            else {
-                continue;
-            }
-            for (const auto& ref : fd_it->second) {
-                std::uint64_t key = (static_cast<std::uint64_t>(ref.pid) << 32) | static_cast<std::uint32_t>(ref.fd);
-                if (bpf_map_update_elem(socket_map_fd, &key, &info, BPF_ANY) != 0) {
-                    std::cerr << "Failed to seed socket " << "pid=" << ref.pid
-                    << " fd=" << ref.fd << ": " << strerror(errno) << std::endl;
-                }
-            }
-        }
-
-        if (sock.family != AF_INET && sock.family != AF_INET6) {
-            continue;
-        }
-
-        if (sock.remote_port == 0) {
-            continue;
-        }
-
-        struct flow_key key{};
-        key.family = sock.family;
-        key.remote_port = sock.remote_port;
-        key.protocol = sock.protocol;
-
-        if (inet_pton(sock.family, sock.remote_ip.c_str(), key.remote_addr) != 1) {
-            continue;
-        }
-
-        struct flow_metrics zero{};
-
-        if (bpf_map_update_elem(flow_map_fd, &key, &zero, BPF_NOEXIST) != 0) {
-            if (errno != EEXIST) {
-                std::cerr << "Failed to seed flow " << sock.remote_ip << ":" << sock.remote_port << std::endl;
-            }
-        }
-    }
-
     return 0;
 }
 
-static int attach_tcx_interfaces(struct ebpf_connect_bpf* skel, std::vector<tcx_links>& attached) {
-    struct if_nameindex* ifs = if_nameindex();
+// static int attach_tcx_interfaces(struct ebpf_connect_bpf* skel, std::vector<tcx_links>& attached) {
+//     struct if_nameindex* ifs = if_nameindex();
+//
+//     if (!ifs) {
+//         std::cerr << "Failed to get network interfaces" << std::endl;
+//         return 1;
+//     }
+//
+//     for (struct if_nameindex* it = ifs; it->if_index != 0 && it->if_name != nullptr; ++it) {
+//         bpf_tcx_opts opts{};
+//         opts.sz = sizeof(opts);
+//
+//         tcx_links links{};
+//         links.ifindex = it->if_index;
+//         links.ifname = it->if_name;
+//
+//         links.ingress = bpf_program__attach_tcx(skel->progs.handle_ingress, it->if_index, &opts);
+//
+//         if (!links.ingress) {
+//             std::cerr << "Failed to attach TCX ingress to " << it->if_name << std::endl;
+//             continue;
+//         }
+//
+//         links.egress = bpf_program__attach_tcx(skel->progs.handle_egress, it->if_index, &opts);
+//
+//         if (!links.egress) {
+//             std::cerr << "Failed to attach TCX egress to " << it->if_name << std::endl;
+//             bpf_link__destroy(links.ingress);
+//             continue;
+//         }
+//         attached.push_back(std::move(links));
+//     }
+//     if_freenameindex(ifs);
+//     return attached.empty();
+// }
 
-    if (!ifs) {
-        std::cerr << "Failed to get network interfaces" << std::endl;
-        return 1;
+static int attach_cgroup(ebpf_connect_bpf* skel, std::vector<bpf_link*>& attached) {
+    int cgfd = open(
+        "/sys/fs/cgroup",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC
+    );
+
+    if (cgfd < 0) {
+        std::cerr << "Failed to open cgroup: " << strerror(errno) << '\n';
+        return -1;
     }
 
-    for (struct if_nameindex* it = ifs; it->if_index != 0 && it->if_name != nullptr; ++it) {
-        bpf_tcx_opts opts{};
-        opts.sz = sizeof(opts);
+    struct target {
+        bpf_program* prog;
+        const char* name;
+    };
 
-        tcx_links links{};
-        links.ifindex = it->if_index;
-        links.ifname = it->if_name;
+    const target targets[] = {
+        {skel->progs.handle_sock_create,  "sock_create"},
+        {skel->progs.handle_sock_release, "sock_release"},
+        {skel->progs.handle_ingress,      "ingress"},
+        {skel->progs.handle_egress,       "egress"},
+    };
 
-        links.ingress = bpf_program__attach_tcx(skel->progs.handle_ingress, it->if_index, &opts);
+    for (const auto& target : targets) {
+        bpf_link* link = bpf_program__attach_cgroup(target.prog, cgfd);
 
-        if (!links.ingress) {
-            std::cerr << "Failed to attach TCX ingress to " << it->if_name << std::endl;
-            continue;
+        long err = libbpf_get_error(link);
+
+        if (!link || err) {
+            int error = err ? static_cast<int>(-err) : errno;
+            std::cerr << "Failed to attach cgroup " << target.name << ": " << strerror(error) << '\n';
+            close(cgfd);
+            return -1;
         }
 
-        links.egress = bpf_program__attach_tcx(skel->progs.handle_egress, it->if_index, &opts);
-
-        if (!links.egress) {
-            std::cerr << "Failed to attach TCX egress to " << it->if_name << std::endl;
-            bpf_link__destroy(links.ingress);
-            continue;
-        }
-        attached.push_back(std::move(links));
+        attached.push_back(link);
     }
-    if_freenameindex(ifs);
-    return attached.empty();
+
+    close(cgfd);
+    return 0;
 }
 
 static void read_flow_metrics(struct ebpf_connect_bpf* skel, std::vector<ebpf_traffic>& traffic) {
@@ -324,13 +406,8 @@ void ebpf_close(ebpf_monitor* m) {
         ring_buffer__free(m->rb);
     }
 
-    for (auto& link : m->links) {
-        if (link.ingress) {
-            bpf_link__destroy(link.ingress);
-        }
-        if (link.egress) {
-            bpf_link__destroy(link.egress);
-        }
+    for (bpf_link* link : m->links) {
+        bpf_link__destroy(link);
     }
 
     if (m->skel) {
@@ -384,10 +461,14 @@ ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::strin
         return fail();
     }
 
+    bpf_program__set_autoattach(m->skel->progs.handle_sock_create, false);
+    bpf_program__set_autoattach(m->skel->progs.handle_sock_release, false);
     bpf_program__set_autoattach(m->skel->progs.handle_ingress, false);
     bpf_program__set_autoattach(m->skel->progs.handle_egress, false);
 
-    if (ebpf_connect_bpf__load(m->skel) != 0) {
+    int load_err = ebpf_connect_bpf__load(m->skel);
+    if (load_err != 0) {
+        std::cerr << "BPF load failed: " << load_err << '\n';
         return fail();
     }
 
@@ -401,15 +482,19 @@ ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::strin
         m->pids.insert(pid);
     }
 
-    if (ebpf_connect_bpf__attach(m->skel) != 0) {
+    int attach_err = ebpf_connect_bpf__attach(m->skel);
+    if (attach_err != 0) {
+        std::cerr << "BPF autoattach failed: " << attach_err << '\n';
+        return fail();
+    }
+
+    if (attach_cgroup(m->skel, m->links) != 0) {
+        std::cerr << "Cgroup attach failed\n";
         return fail();
     }
 
     if (seed_ex(m->skel, all_pids, false) != 0) {
-        return fail();
-    }
-
-    if (attach_tcx_interfaces(m->skel, m->links) != 0) {
+        std::cerr << "Socket seed failed\n";
         return fail();
     }
 
@@ -468,7 +553,11 @@ ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector
 
         m->last_scan = now;
 
-        if (result != 0) {
+        if (result < 0) {
+            return ebpf_step::error;
+        }
+
+        if (result > 0) {
             return ebpf_step::stopped;
         }
     }
@@ -532,7 +621,7 @@ int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_n
                 char ip[INET6_ADDRSTRLEN]{};
 
                 if (inet_ntop(row.key.family, row.key.remote_addr, ip, sizeof(ip))) {
-                    std::cout << "TRAFFIC " << ip << ":" << ntohs(row.key.remote_port) << " | RX: " << row.metrics.rx_bytes
+                    std::cout << "TRAFFIC " << ip << ":" << row.key.remote_port << " | RX: " << row.metrics.rx_bytes
                     << " bytes / " << row.metrics.rx_packets << " packets | TX: " << row.metrics.tx_bytes
                     << " bytes / " << row.metrics.tx_packets << " packets" << "\n";
                 }

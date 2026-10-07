@@ -74,6 +74,27 @@ struct {
     __type(value, struct flow_metrics);
 } flow_mtr SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64); // cookie
+    __type(value, __u32); // pid
+} socket_owners SEC(".maps");
+
+static void remember_cookie(__u64 cookie) {
+    if (!cookie) {
+        return;
+    }
+
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+        return;
+    }
+
+    bpf_map_update_elem(&socket_owners, &cookie, &pid, BPF_NOEXIST);
+}
+
 static int parse_user_sockaddr(void *addr, struct event *e) {
     if (!addr) {
         return -1;
@@ -109,6 +130,27 @@ static int parse_user_sockaddr(void *addr, struct event *e) {
     }
 
     return 0;
+}
+
+SEC("cgroup/sock_create")
+int handle_sock_create(struct bpf_sock *ctx) {
+    if (ctx->family != AF_INET && ctx->family != AF_INET6) {
+        return 1;
+    }
+
+    remember_cookie(bpf_get_socket_cookie(ctx));
+    return 1;
+}
+
+SEC("cgroup/sock_release")
+int handle_sock_release(struct bpf_sock *ctx) {
+    __u64 cookie = bpf_get_socket_cookie(ctx);
+
+    if (cookie) {
+        bpf_map_delete_elem(&socket_owners, &cookie);
+    }
+
+    return 1;
 }
 
 SEC("tp/syscalls/sys_enter_connect")
@@ -165,18 +207,18 @@ int handle_connect_exit(struct trace_event_raw_sys_exit *ctx) {
     long ret = ctx->ret;
     pend->result = ret;
 
-    if (pend->result == 0 || pend->result == -115) {
-        struct flow_key fkey = {};
-        fkey.family = pend->family;
-        fkey.remote_port = pend->remote_port;
-        fkey.protocol = pend->protocol;
-        __builtin_memcpy(fkey.remote_addr, pend->remote_addr, sizeof(fkey.remote_addr));
-        struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
-        if (!m) {
-            struct flow_metrics zero = {};
-            bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST);
-        }
-    }
+    // if (pend->result == 0 || pend->result == -115) {
+    //     struct flow_key fkey = {};
+    //     fkey.family = pend->family;
+    //     fkey.remote_port = pend->remote_port;
+    //     fkey.protocol = pend->protocol;
+    //     __builtin_memcpy(fkey.remote_addr, pend->remote_addr, sizeof(fkey.remote_addr));
+    //     struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
+    //     if (!m) {
+    //         struct flow_metrics zero = {};
+    //         bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST);
+    //     }
+    // }
 
     bpf_ringbuf_output(&events, pend, sizeof(*pend), 0);
     bpf_map_delete_elem(&pending_connects, &id);
@@ -439,64 +481,86 @@ int handle_close(struct trace_event_raw_sys_enter *ctx) {
 //     return 0;
 // }
 
-static int udp_check(struct msghdr *msg) {
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 pid = id >> 32;
+// static int udp_check(struct msghdr *msg) {
+//     __u64 id = bpf_get_current_pid_tgid();
+//     __u32 pid = id >> 32;
+//
+//     if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+//         return 0;
+//     }
+//
+//     void *addr = BPF_CORE_READ(msg, msg_name);
+//
+//     if (!addr) {
+//         return 0;
+//     }
+//
+//     struct flow_key key = {};
+//     key.protocol = IPPROTO_UDP;
+//
+//     if (bpf_probe_read_kernel(&key.family, sizeof(key.family), addr) < 0) {
+//         return 0;
+//     }
+//
+//     if (key.family == AF_INET) {
+//         struct sockaddr_in addr4 = {};
+//         if (bpf_probe_read_kernel(&addr4, sizeof(addr4), addr) < 0) {
+//             return 0;
+//         }
+//
+//         key.remote_port = bpf_ntohs(addr4.sin_port);
+//
+//         __builtin_memcpy(key.remote_addr, &addr4.sin_addr, sizeof(addr4.sin_addr));
+//     } else if (key.family == AF_INET6) {
+//         struct sockaddr_in6 addr6 = {};
+//         if (bpf_probe_read_kernel(&addr6, sizeof(addr6), addr) < 0) {
+//             return 0;
+//         }
+//
+//         key.remote_port = bpf_ntohs(addr6.sin6_port);
+//
+//         __builtin_memcpy(key.remote_addr, &addr6.sin6_addr, sizeof(addr6.sin6_addr));
+//     } else {
+//         return 0;
+//     }
+//
+//     struct flow_metrics zero = {};
+//     bpf_map_update_elem(&flow_mtr, &key, &zero, BPF_NOEXIST );
+//
+//     return 0;
+// }
+//
+// SEC("fentry/udp_sendmsg")
+// int BPF_PROG(handle_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+//     udp_check(msg);
+//     return 0;
+// }
+//
+// SEC("fentry/udpv6_sendmsg")
+// int BPF_PROG(handle_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+//     udp_check(msg);
+//     return 0;
+// }
 
-    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
-        return 0;
+SEC("fentry/sock_sendmsg")
+int BPF_PROG(handle_sock_sendmsg, struct socket *sock, struct msghdr *msg) {
+    struct sock *sk = sock->sk;
+
+    if (sk) {
+        remember_cookie(bpf_get_socket_cookie(sk));
     }
-
-    void *addr = BPF_CORE_READ(msg, msg_name);
-
-    if (!addr) {
-        return 0;
-    }
-
-    struct flow_key key = {};
-    key.protocol = IPPROTO_UDP;
-
-    if (bpf_probe_read_kernel(&key.family, sizeof(key.family), addr) < 0) {
-        return 0;
-    }
-
-    if (key.family == AF_INET) {
-        struct sockaddr_in addr4 = {};
-        if (bpf_probe_read_kernel(&addr4, sizeof(addr4), addr) < 0) {
-            return 0;
-        }
-
-        key.remote_port = bpf_ntohs(addr4.sin_port);
-
-        __builtin_memcpy(key.remote_addr, &addr4.sin_addr, sizeof(addr4.sin_addr));
-    } else if (key.family == AF_INET6) {
-        struct sockaddr_in6 addr6 = {};
-        if (bpf_probe_read_kernel(&addr6, sizeof(addr6), addr) < 0) {
-            return 0;
-        }
-
-        key.remote_port = bpf_ntohs(addr6.sin6_port);
-
-        __builtin_memcpy(key.remote_addr, &addr6.sin6_addr, sizeof(addr6.sin6_addr));
-    } else {
-        return 0;
-    }
-
-    struct flow_metrics zero = {};
-    bpf_map_update_elem(&flow_mtr, &key, &zero, BPF_NOEXIST );
 
     return 0;
 }
 
-SEC("fentry/udp_sendmsg")
-int BPF_PROG(handle_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
-    udp_check(msg);
-    return 0;
-}
+SEC("fentry/sock_recvmsg")
+int BPF_PROG(handle_sock_recvmsg, struct socket *sock, struct msghdr *msg, int flags) {
+    struct sock *sk = sock->sk;
 
-SEC("fentry/udpv6_sendmsg")
-int BPF_PROG(handle_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
-    udp_check(msg);
+    if (sk) {
+        remember_cookie(bpf_get_socket_cookie(sk));
+    }
+
     return 0;
 }
 
@@ -545,7 +609,23 @@ struct __sk_buff {
 */
 
 static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
+    __u64 cookie = bpf_get_socket_cookie(skb);
+    if (!cookie) {
+        return 1;
+    }
+
+    __u32 *owner = bpf_map_lookup_elem(&socket_owners, &cookie);
+    if (!owner) {
+        return 1;
+    }
+
+    __u32 pid = *owner;
+    if (!bpf_map_lookup_elem(&allowed_pids, &pid)) {
+        return 1;
+    }
+
     struct flow_key fkey = {};
+    
     __u16 eth_proto = bpf_ntohs((__u16)skb->protocol);
     struct read_port {
         __u16 sport;
@@ -555,12 +635,12 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
     if (eth_proto == ETH_P_IP) {
         struct iphdr ip4 = {};
         struct read_port ports;
-        if (bpf_skb_load_bytes_relative(skb, 0, &ip4, sizeof(ip4), BPF_HDR_START_NET) < 0) {
-            return TCX_NEXT;
+        if (bpf_skb_load_bytes(skb, 0, &ip4, sizeof(ip4)) < 0) {
+            return 1;
         }
 
         if (ip4.protocol != IPPROTO_TCP && ip4.protocol != IPPROTO_UDP) {
-                return TCX_NEXT;
+                return 1;
         }
 
         fkey.family = AF_INET;
@@ -568,13 +648,13 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
 
         __u32 ip_hdr_len = ip4.ihl * 4;
         if (ip_hdr_len < sizeof(struct iphdr)) {
-            return TCX_NEXT;
+            return 1;
         }
 
-        int ret = bpf_skb_load_bytes_relative(skb, ip_hdr_len, &ports, sizeof(ports), BPF_HDR_START_NET);
-        
+        int ret = bpf_skb_load_bytes(skb, ip_hdr_len, &ports, sizeof(ports));
+
         if (ret != 0) {
-            return TCX_NEXT;
+            return 1;
         }
 
         if (tx_rx) {
@@ -587,22 +667,22 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
     } else if (eth_proto == ETH_P_IPV6) {
         struct ipv6hdr ip6 = {};
         struct read_port ports;
-        if (bpf_skb_load_bytes_relative(skb, 0, &ip6, sizeof(ip6), BPF_HDR_START_NET) < 0) {
-            return TCX_NEXT;
+        if (bpf_skb_load_bytes(skb, 0, &ip6, sizeof(ip6)) < 0) {
+            return 1;
         }
 
         fkey.family = AF_INET6;
 
          if (ip6.nexthdr != IPPROTO_TCP && ip6.nexthdr != IPPROTO_UDP) {
-             return TCX_NEXT;
+             return 1;
          }
 
         fkey.protocol = ip6.nexthdr;
 
-        int ret = bpf_skb_load_bytes_relative(skb, sizeof(struct ipv6hdr), &ports, sizeof(ports), BPF_HDR_START_NET);
+        int ret = bpf_skb_load_bytes(skb, sizeof(struct ipv6hdr), &ports, sizeof(ports));
 
         if (ret != 0) {
-            return TCX_NEXT;
+            return 1;
         }
 
         if (tx_rx) {
@@ -613,13 +693,19 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
             fkey.remote_port = bpf_ntohs(ports.sport);
         }
     } else {
-        return TCX_NEXT;
+        return 1;
     }
 
     struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
 
     if (!m) {
-        return TCX_NEXT;
+        struct flow_metrics zero = {};
+        bpf_map_update_elem(&flow_mtr, &fkey, &zero, BPF_NOEXIST);
+        m = bpf_map_lookup_elem(&flow_mtr, &fkey);
+
+        if (!m) {
+            return 1;
+        }
     }
 
     __u64 len = skb->len;
@@ -636,15 +722,15 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
         __sync_fetch_and_add(&m->rx_packets, packets);
     }
 
-    return TCX_NEXT;
+    return 1;
 }
 
-SEC("tcx/egress")
+SEC("cgroup_skb/egress")
 int handle_egress(struct __sk_buff *skb) {
     return traffic_analyze(skb, true);
 }
 
-SEC("tcx/ingress")
+SEC("cgroup_skb/ingress")
 int handle_ingress(struct __sk_buff *skb) {
     return traffic_analyze(skb, false);
 }
