@@ -7,6 +7,7 @@
 #include "../headers/pid.h"
 #include "../headers/export.h"
 #include "../headers/data.h"
+#include "../headers/supp_funcs.h"
 
 #include <iostream>
 #include <csignal>
@@ -45,6 +46,7 @@ struct ebpf_monitor {
     bool pid_tree = false;
 
     std::vector<event> events;
+    std::vector<dns_query> dns_queries;
     std::chrono::steady_clock::time_point last_scan{};
 };
 
@@ -54,20 +56,130 @@ static void handle_signal(int) {
     exiting = 1;
 }
 
-static std::string protocol_to_string(int protocol) {
-    switch (protocol) {
-    case IPPROTO_TCP: return "TCP";
-    case IPPROTO_UDP: return "UDP";
-    default: return "UNKNOWN";
+static bool read_dns_name(const unsigned char* data, std::size_t size, std::size_t& offset, std::string& name) {
+    std::size_t pos = offset;
+    std::size_t wire_len = 1;
+    bool jumped = false;
+    name.clear();
+
+    for (unsigned steps = 0; steps < 512; ++steps) {
+        if (pos >= size) {
+            return false;
+        }
+
+        unsigned len = data[pos++];
+
+        if ((len & 0xc0) == 0xc0) {
+            if (pos >= size) {
+                return false;
+            }
+
+            std::size_t target = ((len & 0x3f) << 8) | data[pos++];
+
+            if (target >= pos - 2){
+                return false;
+            }
+
+            if (!jumped) {
+                offset = pos;
+            }
+
+            jumped = true;
+            pos = target;
+            continue;
+        }
+
+        if (len & 0xc0) {
+            return false;
+        }
+
+        if (len == 0) {
+            if (!jumped) {
+                offset = pos;
+            }
+
+            if (name.empty()) {
+                name = ".";
+            }
+
+            return true;
+        }
+
+        wire_len += len + 1;
+        if (wire_len > 255 || len > size - pos) {
+            return false;
+        }
+
+        if (!name.empty()) {
+            name += '.';
+        }
+
+        for (unsigned i = 0; i < len; ++i) {
+            unsigned c = data[pos++];
+            if (c > 32 && c < 127 && c != '.' && c != '\\') {
+                name += static_cast<char>(c);
+            } else {
+                name += '\\';
+                name += static_cast<char>('0' + c / 100);
+                name += static_cast<char>('0' + (c / 10) % 10);
+                name += static_cast<char>('0' + c % 10);
+            }
+        }
     }
+    return false;
 }
 
-static std::string family_to_string(int family) {
-    switch (family) {
-    case AF_INET: return "IPv4";
-    case AF_INET6: return "IPv6";
-    default: return "UNKNOWN";
+static int handle_dns_event(void* ctx, void* data, size_t data_sz) {
+    if (!ctx || !data || data_sz < sizeof(dns_event)) {
+        return 0;
     }
+
+    auto* m = static_cast<ebpf_monitor*>(ctx);
+    const auto* e = static_cast<const dns_event*>(data);
+
+    std::size_t size = e->captured_len;
+    if (size < 12 || size > FLOWRAY_DNS_CAPTURE_LEN) {
+        return 0;
+    }
+
+    const auto* bytes = e->data;
+
+    if (bytes[2] & 0xf8) {
+        return 0;
+    }
+
+    unsigned questions = (static_cast<unsigned>(bytes[4]) << 8) | bytes[5];
+
+    if (!questions || questions > (size - 12) / 5) {
+        return 0;
+    }
+
+    std::size_t offset = 12;
+    std::vector<dns_query> parsed;
+
+    for (unsigned i = 0; i < questions; ++i) {
+        dns_query query{};
+        query.pid = e->pid;
+
+        if (!read_dns_name(bytes, size, offset, query.domain)) {
+            return 0;
+        }
+
+        if (offset > size || size - offset < 4) {
+            return 0;
+        }
+
+        query.type = (static_cast<unsigned>(bytes[offset]) << 8) | bytes[offset + 1];
+
+        offset += 4;
+        parsed.push_back(std::move(query));
+    }
+
+    for (auto& query : parsed) {
+        m->dns_queries.push_back(std::move(query));
+    }
+
+    return 0;
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz) {
@@ -504,13 +616,25 @@ ebpf_monitor* ebpf_open(const std::vector<std::uint32_t>& pids, const std::strin
         return fail();
     }
 
+    int dns_err = ring_buffer__add(m->rb, bpf_map__fd(m->skel->maps.dns_events), handle_dns_event, m);
+
+    if (dns_err != 0) {
+        std::cerr << "Failed to add DNS ring buffer: " << dns_err << '\n';
+        return fail();
+    }
+
     m->last_scan = std::chrono::steady_clock::now() - std::chrono::seconds(1);
 
     return m;
 }
 
-ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector<ebpf_traffic>& traffic, bool* traffic_updated = nullptr) {
+ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector<ebpf_traffic>& traffic,
+    bool* traffic_updated, std::vector<dns_query>* dns) {
     events.clear();
+
+    if (dns) {
+        dns->clear();
+    }
 
     if (traffic_updated) {
         *traffic_updated = false;
@@ -527,6 +651,12 @@ ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector
     int err = ring_buffer__poll(m->rb, 10);
 
     events.swap(m->events);
+
+    if (dns) {
+        dns->swap(m->dns_queries);
+    } else {
+        m->dns_queries.clear();
+    }
 
     if (exiting) {
         return ebpf_step::stopped;
@@ -588,8 +718,19 @@ int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_n
 
     int result = 0;
 
+    std::vector<dns_query> dns;
+
     while (true) {
-        auto step = ebpf_get_step(m, events, traffic);
+        auto step = ebpf_get_step(m, events, traffic, nullptr, &dns);
+
+        for (const auto& query : dns) {
+            std::cout << "DNS | PID " << query.pid << " | " << query.domain << " | " << dns_type_to_string(query.type) << '\n';
+        }
+
+        if (!dns.empty()) {
+            std::cout << std::flush;
+        }
+
         events_history.insert(events_history.end(), events.begin(), events.end());
 
         for (const auto& e : events) {

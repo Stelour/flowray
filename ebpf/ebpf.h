@@ -7,6 +7,14 @@
 #define AF_INET 2
 #define AF_INET6 10
 
+#define FLOWRAY_DNS_CAPTURE_LEN 512
+
+struct dns_event {
+    unsigned int pid;
+    unsigned int captured_len;
+    unsigned char data[FLOWRAY_DNS_CAPTURE_LEN];
+};
+
 struct event {
     unsigned int pid;
     unsigned int tid;

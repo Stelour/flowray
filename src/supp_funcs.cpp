@@ -47,3 +47,20 @@ std::string result_to_string(int result) {
     }
     return "FAILED";
 };
+
+std::string dns_type_to_string(std::uint16_t type) {
+    switch (type) {
+    case 1: return "A";
+    case 2: return "NS";
+    case 5: return "CNAME";
+    case 12: return "PTR";
+    case 15: return "MX";
+    case 16: return "TXT";
+    case 28: return "AAAA";
+    case 33: return "SRV";
+    case 64: return "SVCB";
+    case 65: return "HTTPS";
+    case 255: return "ANY";
+    default: return "TYPE" + std::to_string(type);
+    }
+}

@@ -81,6 +81,11 @@ struct {
     __type(value, __u32); // pid
 } socket_owners SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} dns_events SEC(".maps");
+
 static void remember_cookie(__u64 cookie) {
     if (!cookie) {
         return;
@@ -564,6 +569,64 @@ int BPF_PROG(handle_sock_recvmsg, struct socket *sock, struct msghdr *msg, int f
     return 0;
 }
 
+static void capture_dns(struct __sk_buff *skb, __u32 udp_offset, __u32 pid) {
+    struct udphdr udp = {};
+    if (bpf_skb_load_bytes(skb, udp_offset, &udp, sizeof(udp)) < 0) {
+        return;
+    }
+
+    if (bpf_ntohs(udp.dest) != 53) {
+        return;
+    }
+
+    __u32 udp_len = bpf_ntohs(udp.len);
+    if (udp_len < sizeof(udp) + 12) {
+        return;
+    }
+
+    __u32 dns_offset = udp_offset + sizeof(udp);
+    __u8 header[12] = {};
+
+    if (bpf_skb_load_bytes(skb, dns_offset, header, sizeof(header)) < 0) {
+        return;
+    }
+
+    if (header[2] & 0x80) {
+        return;
+    }
+
+    if (header[2] & 0x78) {
+        return;
+    }
+
+    if (header[4] == 0 && header[5] == 0) {
+        return;
+    }
+
+    __u32 captured_len = udp_len - sizeof(udp);
+
+    if (captured_len > FLOWRAY_DNS_CAPTURE_LEN) {
+        captured_len = FLOWRAY_DNS_CAPTURE_LEN;
+    }
+
+    struct dns_event *e = bpf_ringbuf_reserve(&dns_events, sizeof(struct dns_event), 0);
+
+    if (!e) {
+        return;
+    }
+
+    e->pid = pid;
+    e->captured_len = captured_len;
+
+    __builtin_memset(e->data, 0, sizeof(e->data));
+
+    if (bpf_skb_load_bytes(skb, dns_offset, e->data, captured_len) < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return;
+    }
+    bpf_ringbuf_submit(e, 0);
+}
+
 /*
 
 struct __sk_buff {
@@ -625,7 +688,8 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
     }
 
     struct flow_key fkey = {};
-    
+    __u32 l4_offset = 0;
+
     __u16 eth_proto = bpf_ntohs((__u16)skb->protocol);
     struct read_port {
         __u16 sport;
@@ -650,6 +714,12 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
         if (ip_hdr_len < sizeof(struct iphdr)) {
             return 1;
         }
+
+        if (bpf_ntohs(ip4.frag_off) & 0x1fff) {
+            return 1;
+        }
+
+        l4_offset = ip_hdr_len;
 
         int ret = bpf_skb_load_bytes(skb, ip_hdr_len, &ports, sizeof(ports));
 
@@ -677,6 +747,8 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
              return 1;
          }
 
+        l4_offset = sizeof(struct ipv6hdr);
+
         fkey.protocol = ip6.nexthdr;
 
         int ret = bpf_skb_load_bytes(skb, sizeof(struct ipv6hdr), &ports, sizeof(ports));
@@ -694,6 +766,10 @@ static int traffic_analyze(struct __sk_buff *skb, bool tx_rx) {
         }
     } else {
         return 1;
+    }
+
+    if (tx_rx && fkey.protocol == IPPROTO_UDP && fkey.remote_port == 53) {
+        capture_dns(skb, l4_offset, pid);
     }
 
     struct flow_metrics *m = bpf_map_lookup_elem(&flow_mtr, &fkey);
