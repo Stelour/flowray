@@ -78,7 +78,7 @@ status_msg export_socket_json(
         const auto& sock = live.socket;
         json row = {
             {"protocol", protocol_to_string(sock.protocol)},
-            {"family", protocol_to_string(sock.protocol)},
+            {"family", family_to_string(sock.family)},
             {"local_address", sock.local_ip},
             {"local_port", sock.local_port},
             {"remote_address", sock.remote_ip},
@@ -139,8 +139,8 @@ status_msg export_ebpf_json(
         json r = {
             {"protocol", protocol_to_string(row.key.protocol)},
             {"family", family_to_string(row.key.family)},
-            {"local_address", ip},
-            {"local_port", row.key.remote_port},
+            {"remote_address", ip},
+            {"remote_port", row.key.remote_port},
             {"rx_bytes", row.metrics.rx_bytes},
             {"tx_bytes", row.metrics.tx_bytes},
             {"rx_packets", row.metrics.rx_packets},
