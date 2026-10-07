@@ -197,6 +197,7 @@ static status_msg start_live_mode(
     auto lt = std::chrono::system_clock::now();
     while (true) {
         if (update_live_data(pids, pid_tree, proc_name, processes, live_sockets) != status_msg::success) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
 
