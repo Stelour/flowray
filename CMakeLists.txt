@@ -27,6 +27,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(CLI11 ftxui)
 
 find_package(PkgConfig REQUIRED)
+find_package(nlohmann_json REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
 
 set(EBPF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ebpf)
@@ -99,7 +100,7 @@ add_executable(flowray main.cpp
         headers/supp_funcs.h
 )
 
-target_link_libraries(flowray PRIVATE CLI11::CLI11 PkgConfig::LIBBPF ftxui::screen ftxui::dom ftxui::component)
+target_link_libraries(flowray PRIVATE CLI11::CLI11 PkgConfig::LIBBPF ftxui::screen ftxui::dom ftxui::component nlohmann_json::nlohmann_json)
 
 target_compile_options(flowray PRIVATE
         -Wall
