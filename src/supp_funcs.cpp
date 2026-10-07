@@ -37,3 +37,13 @@ std::string family_to_string(int family) {
     default: return "UNKNOWN";
     }
 }
+
+std::string result_to_string(int result) {
+    if (result == 0) {
+        return "SUCCESS";
+    }
+    if (result == -EINPROGRESS) {
+        return "PENDING";
+    }
+    return "FAILED";
+};

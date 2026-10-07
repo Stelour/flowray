@@ -4,10 +4,10 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
+#include <iostream>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-
-using json = nlohmann::json;
 
 static std::int64_t time_to_ms(const std::chrono::system_clock::time_point& time) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
@@ -40,21 +40,13 @@ status_msg validate_exs_file (const std::string& path) {
     return status_msg::success;
 }
 
-// status_msg export_ebpf_json(
-//     const std::string& path,
-//     const std::vector<std::uint32_t>& pids,
-//     const std::string& proc_name,
-//     const std::vector<ebpf_traffic>& traffic,
-//     const std::vector<event>& events) {
-//
-// }
-
 status_msg export_socket_json(
     const std::string& path,
     const std::vector<std::uint32_t>& pids,
     const std::string& proc_name,
     const std::vector<ProcessInfo>& process,
     const std::vector<LiveSocket>& sockets) {
+    using json = nlohmann::json;
     json j;
     j["backend"] = "socket";
     j["target"] = {
@@ -109,6 +101,73 @@ status_msg export_socket_json(
         }
 
         j["sockets"].push_back(std::move(row));
+    }
+
+    std::ofstream out_file(path);
+
+    if (!out_file.is_open()) {
+        return status_msg::error;
+    }
+
+    out_file << std::setw(2) << j;
+
+    return status_msg::success;
+}
+
+status_msg export_ebpf_json(
+    const std::string& path,
+    const std::vector<std::uint32_t>& pids,
+    const std::string& proc_name,
+    const std::vector<ebpf_traffic>& traffic,
+    const std::vector<event>& events) {
+    using json = nlohmann::json;
+    json j;
+
+    j["backend"] = "ebpf";
+    j["target"] = {
+        {"name", proc_name},
+        {"pids", pids},
+    };
+
+    j["traffic"] = json::array();
+    for (const auto& row : traffic) {
+        char ip[INET6_ADDRSTRLEN]{};
+        if (!inet_ntop(row.key.family, row.key.remote_addr, ip, sizeof(ip))) {
+            continue;
+        }
+
+        json r = {
+            {"protocol", protocol_to_string(row.key.protocol)},
+            {"family", family_to_string(row.key.family)},
+            {"local_address", ip},
+            {"local_port", row.key.remote_port},
+            {"rx_bytes", row.metrics.rx_bytes},
+            {"tx_bytes", row.metrics.tx_bytes},
+            {"rx_packets", row.metrics.rx_packets},
+            {"tx_packets", row.metrics.tx_packets},
+        };
+
+        j["traffic"].push_back(r);
+    }
+
+    j["events"] = json::array();
+    for (const auto& e : events) {
+        char ip[INET6_ADDRSTRLEN]{};
+        if (!inet_ntop(e.family, e.remote_addr, ip, sizeof(ip))) {
+            std::cout << "423" << std::endl;
+            continue;
+        }
+
+        json r = {
+            {"pid", e.pid},
+            {"protocol", e.protocol},
+            {"family", e.family},
+            {"remote address", ip},
+            {"remote_port", e.remote_port},
+            {"result", result_to_string(e.result)},
+        };
+
+        j["events"].push_back(r);
     }
 
     std::ofstream out_file(path);

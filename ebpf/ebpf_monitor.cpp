@@ -5,7 +5,8 @@
 #include "ebpf_connect.skel.h"
 #include "../headers/proc_name.h"
 #include "../headers/pid.h"
-#include "../headers/output.h"
+#include "../headers/export.h"
+#include "../headers/data.h"
 
 #include <iostream>
 #include <csignal>
@@ -475,7 +476,14 @@ ebpf_step ebpf_get_step(ebpf_monitor* m, std::vector<event>& events, std::vector
     return ebpf_step::updated;
 }
 
-int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size) {
+int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree,
+    std::uint64_t ring_buf_size, const std::string& path) {
+
+    bool exp = false;
+    if (!path.empty()) {
+        exp = true;
+    }
+
     auto* m = ebpf_open(pids, proc_name, pid_tree, ring_buf_size);
     if (!m) {
         std::cerr << "Failed to start eBPF monitor\n";
@@ -484,13 +492,16 @@ int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_n
 
     std::vector<event> events;
     std::vector<ebpf_traffic> traffic;
+    std::vector<event> events_history;
 
     auto last_print = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    auto lt2 = std::chrono::system_clock::now();
 
     int result = 0;
 
     while (true) {
         auto step = ebpf_get_step(m, events, traffic);
+        events_history.insert(events_history.end(), events.begin(), events.end());
 
         for (const auto& e : events) {
             char ip[INET6_ADDRSTRLEN]{};
@@ -536,6 +547,14 @@ int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_n
         if (step != ebpf_step::updated) {
             result = step == ebpf_step::error ? 1 : 0;
             break;
+        }
+
+        if ((exp) && (lt2 + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
+            if (export_ebpf_json(path, pids, proc_name, traffic, events_history) != status_msg::success) {
+                std::cerr << "Failed write to file" << path << std::endl;
+                continue;
+            }
+            lt2 = std::chrono::system_clock::now();
         }
     }
 

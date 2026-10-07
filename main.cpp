@@ -132,12 +132,12 @@ int main(int argc, char* argv[]) {
         }
     } else {
         if (print_term) {
-            if (ebpf_start(pids, proc_name, pid_tree, ring_buf_size) != 0) {
+            if (ebpf_start(pids, proc_name, pid_tree, ring_buf_size, export_path) != 0) {
                 std::cerr << "ERROR: failed to start ebpf " << std::endl;
                 return 1;
             }
         } else {
-            if (output_ebpf_live(pids, proc_name, pid_tree, pid_detail, ring_buf_size) != status_msg::success) {
+            if (output_ebpf_live(pids, proc_name, pid_tree, pid_detail, ring_buf_size, export_path) != status_msg::success) {
                 std::cerr << "ERROR: failed to start live ebpf " << std::endl;
                 return 1;
             }

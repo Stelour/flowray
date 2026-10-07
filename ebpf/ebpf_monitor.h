@@ -26,6 +26,7 @@ ebpf_step ebpf_get_step(ebpf_monitor* monitor, std::vector<event>& events, std::
 
 void ebpf_close(ebpf_monitor* monitor);
 
-int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, std::uint64_t ring_buf_size);
+int ebpf_start(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree,
+    std::uint64_t ring_buf_size, const std::string& path);
 
 #endif //FLOWRAY_EBPF_MONITOR_H

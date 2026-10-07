@@ -241,14 +241,7 @@ static std::string ebpf_event_row(const event& e, std::unordered_map<std::string
         it->second = time;
     }
 
-    std::string result;
-    if (e.result == 0) {
-        result = "SUCCESS";
-    } else if (e.result == -EINPROGRESS) {
-        result = "PENDING";
-    } else {
-        result = "FAILED";
-    }
+    std::string result = result_to_string(e.result);
 
     std::string remote = e.family == AF_INET6 ? "[" + std::string(ip) + "]" : std::string(ip);
     remote += ":" + std::to_string(e.remote_port);
@@ -378,12 +371,18 @@ static void update_ebpf_rows(const std::vector<ebpf_traffic>& traffic,
     last_sample = now;
 }
 
-status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree, bool pid_detail, std::uint64_t ring_buf_size) {
+status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::string& proc_name, bool pid_tree,
+    bool pid_detail, std::uint64_t ring_buf_size, const std::string& path) {
     std::string nm = proc_name;
     if (proc_name.empty()) {
         for (auto pid : pids) {
             nm += std::to_string(pid);
         }
+    }
+
+    bool exp = false;
+    if (!path.empty()) {
+        exp = true;
     }
 
     auto *monitor = ebpf_open(pids, proc_name, pid_tree, ring_buf_size);
@@ -400,6 +399,7 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
     }
 
     std::vector<event> events;
+    std::vector<event> events_history;
     std::vector<ebpf_traffic> traffic;
     std::vector<std::string> traffic_rows;
     std::vector<std::string> event_rows;
@@ -458,11 +458,13 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
     std::unordered_map<std::string, flow_metrics> previous;
     auto last_sample = std::chrono::steady_clock::now();
     status_msg result = status_msg::success;
+    auto lt2 = std::chrono::system_clock::now();
 
     Loop loop(&app, component);
     while (!loop.HasQuitted()) {
         bool traffic_updated = false;
         auto step = ebpf_get_step(monitor, events, traffic, &traffic_updated);
+        events_history.insert(events_history.end(), events.begin(), events.end());
 
         for (const auto& e : events) {
             event_rows.push_back(ebpf_event_row(e, first_seen));
@@ -471,6 +473,13 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         if (traffic_updated) {
             update_ebpf_rows(traffic, previous, last_sample, pid_detail, traffic_rows);
             selected_traffic = std::clamp(selected_traffic, 0, traffic_rows.empty() ? 0 : int(traffic_rows.size()) - 1);
+        }
+
+        if ((exp) && (lt2 + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
+            if (export_ebpf_json(path, pids, proc_name, traffic, events_history) != status_msg::success) {
+                return status_msg::error;
+            }
+            lt2 = std::chrono::system_clock::now();
         }
 
         if (!events.empty() || traffic_updated) {
