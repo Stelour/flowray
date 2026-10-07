@@ -1,20 +1,21 @@
-# flowray v1.0.0-1
+# flowray v0.6.0
 
 Linux application network activity analyzer.
 
-FlowRay tracks the network activity of a specific Linux application and shows which remote endpoints it communicates with, how much traffic is transferred, and which processes own its sockets.
+## About
 
-It provides two monitoring backends:
+FlowRay analyzes the network activity of running Linux applications. It shows remote addresses, ports, protocols, and traffic counters, along with connection events. It also logs outgoing UDP DNS queries sent to port 53.
 
-- **eBPF**
-- **Socket diagnostics**
+Select an application by PID or process name and optionally include its descendant processes. View its activity in an interactive terminal interface or stdout, and export traffic and connection data to JSON.
 
-## Example
+The default eBPF backend provides live traffic monitoring and event logs. The socket diagnostics backend offers an alternative for inspecting sockets and their owning processes.
+
+## Quick start
 
 Analyze your browser traffic:
 
 ```bash
-./flowray --name zen --tree
+sudo ./build/flowray --name zen --tree
 ```
 
 ![fxtui_ebpf.png](docs/fxtui_ebpf.png)
@@ -22,31 +23,43 @@ Analyze your browser traffic:
 or socket backend:
 
 ```bash
-./flowray --name zen --tree --socket
+./build/flowray --name discord --tree --socket
 ```
 
 ![fxtui_socket.png](docs/fxtui_socket.png)
 
 ## Requirements
 
-### Linux
+### Build dependencies
 
 The eBPF backend requires:
 
-- Linux 6.6+
 - kernel BTF at `/sys/kernel/btf/vmlinux`
-- root privileges
+- CMake
 - Clang
-- bpf
+- bpftool
+- libbpf
+- pkg-config
+- nlohmann/json
 
-> The classic socket backend does not require eBPF or root privileges in the normal case.
+> CMake downloads CLI11 and FTXUI during configuration, so an internet connection is required.
+
+### Runtime requirements
+
+The eBPF backend requires:
+- Linux with eBPF support
+- cgroup v2 mounted at `/sys/fs/cgroup`
+- Kernel BTF at `/sys/kernel/btf/vmlinux`
+- Root privileges
+
+The socket backend usually works without root.
 
 ### Arch Linux
 
 Install dependencies:
 
 ```
-sudo pacman -S --needed base-devel git cmake clang bpf libbpf
+sudo pacman -S --needed base-devel git cmake clang bpf libbpf nlohmann-json
 ```
 
 ## Build
@@ -67,16 +80,11 @@ And start using it:
 ./build/flowray --help
 ```
 
----
+CMake automatically generates:
 
-### eBPF build files
-
-If you want to generate from source, keep in mind, for eBPF need to be generated 3 files:
-- ebpf/vmlinux.h
-- ebpf/ebpf_connect.bpf.o
-- ebpf/ebpf_connect.skel.h
-
-They are generated automatically by CMakeLists.txt during the build.
+- `ebpf/vmlinux.h`
+- `ebpf/ebpf_connect.bpf.o`
+- `ebpf/ebpf_connect.skel.h`
 
 ## Usage
 
@@ -88,7 +96,7 @@ flowray (--pid PID | --name NAME) [options]
 
 ### Target selection
 
-#### `--pid, -p`
+#### `--pid, -p PID`
 
 Analyze a process by PID.
 
@@ -96,7 +104,7 @@ Analyze a process by PID.
 sudo ./build/flowray --pid 12345
 ```
 
-#### `--name, -n`
+#### `--name, -n NAME`
 
 Analyze all processes matching the specified process name.
 
@@ -104,57 +112,9 @@ Analyze all processes matching the specified process name.
 sudo ./build/flowray --name Discord
 ```
 
-> `--name` may select multiple processes.
+> `--name` performs a case-insensitive substring match against Linux process names from `/proc/<pid>/comm`. It may select multiple processes.
 
-### Additional options
-
-#### `--tree, -t`
-
-Include descendant processes of the selected target.
-
-```bash
-sudo ./build/flowray --name Discord --tree
-```
-
-#### `--detail, -d`
-
-Show additional connection details.
-
-#### `--socket, -s`
-
-Use the classic socket diagnostics backend instead of eBPF.
-
-```bash
-./build/flowray --name Discord --socket
-```
-
-#### `--live, -l`
-
-Continuously monitor socket state changes.
-
-This option is only available with the classic socket backend.
-
-```bash
-./build/flowray --name Discord --socket --live
-```
-
-#### `--stdout`
-
-Print monitoring output to stdout instead of using the interactive TUI.
-
-```bash
-sudo ./build/flowray --name Discord --tree --stdout
-```
-
-#### `--ring-buffer-size SIZE`
-
-Set the eBPF event ring buffer size in KiB. The value must be a power of two and at least `256`. Default value - 256 KiB.
-
-```bash
-sudo ./build/flowray --name Discord --ring-buffer-size 1024
-```
-
-### CLI `--help` example
+#### Additional options (CLI `--help`)
 
 ```
 FlowRay - linux application network activity analyzer
@@ -178,7 +138,42 @@ OPTIONS:
           --stdout            Print output to stdout instead of using the TUI
           --ring-buffer-size UINT Excludes: --socket 
                               Set the eBPF event ring buffer size in KiB (power of two, min
-                              256)         
+                              256)
+  -e,     --export TEXT       Export monitoring data to a JSON file         
+```
+
+**Additionally**:
+
+- `--pid` and `--name` are mutually exclusive.
+- `--live (-l)` option is only available with the classic socket backend.
+- `--ring-buffer-size` defaults to `256` KiB. It must be a power of two and at least `256`. This option cannot be used with `--socket`.
+
+### Examples
+
+Print traffic, connection events, and DNS queries to stdout:
+
+```bash
+sudo ./build/flowray --name discord --tree --stdout
+```
+
+Continuously print socket diagnostics:
+
+```bash
+./build/flowray --name discord --socket --live --stdout
+```
+
+Export monitoring data:
+
+```bash
+sudo ./build/flowray --name discord --tree --export traffic.json
+```
+
+The export file is replaced with an updated snapshot during live monitoring. DNS query logs are currently displayed in the interface and stdout, but are not included in JSON exports.
+
+Use a larger connection event ring buffer:
+
+```bash
+sudo ./build/flowray --name discord --ring-buffer-size 1024
 ```
 
 ## FAQ
@@ -186,3 +181,13 @@ OPTIONS:
 flowray via backend sockets fails after a system/kernel update
 
 > If the Linux kernel or kernel modules were updated while the system was running, the currently running kernel may no longer match the modules installed on disk. Reboot the system and try FlowRay again.
+
+eBPF fails to start, check that:
+
+- FlowRay is running with root privileges.
+- `/sys/kernel/btf/vmlinux` exists.
+- cgroup v2 is mounted at `/sys/fs/cgroup`.
+- The kernel supports the required BPF hooks.
+- System security policy permits BPF loading and attachment.
+
+Read the preceding libbpf error messages for the specific failure.
