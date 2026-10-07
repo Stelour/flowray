@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2)
 project(
         flowray
-        VERSION 1.0.0
+        VERSION 0.6.0
         DESCRIPTION "Linux application network activity analyzer"
         LANGUAGES CXX
 )
