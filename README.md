@@ -1,4 +1,4 @@
-# FlowRay v0.4.0-2
+# FlowRay v0.5.0
 
 Linux application network activity analyzer.
 
@@ -27,7 +27,7 @@ The eBPF backend requires:
 Install dependencies:
 
 ```
-sudo pacman -S base-devel git cmake clang bpf cli11
+sudo pacman -S base-devel git cmake clang bpf
 ```
 
 
