@@ -155,8 +155,24 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
 
     refresh_rows();
 
-    auto active_menu = Menu(&active_rows, &active_selected);
-    auto inactive_menu = Menu(&inactive_rows, &inactive_selected);
+    auto menu_style = MenuOption::Vertical();
+
+    menu_style.entries_option.transform = [](const EntryState& state) {
+        auto row = text(std::string(state.active ? "> " : "  ") + state.label);
+
+        if (state.focused) {
+            row = row | color(Color::Pink1);
+        }
+
+        if (state.active) {
+            row = row | bold;
+        }
+
+        return row;
+    };
+
+    auto active_menu = Menu(&active_rows, &active_selected, menu_style);
+    auto inactive_menu = Menu(&inactive_rows, &inactive_selected, menu_style);
 
     auto menus = Container::Vertical({active_menu, inactive_menu});
 
@@ -317,6 +333,25 @@ static Element ebpf_traffic_header(bool pid_detail) {
     return hbox(columns);
 }
 
+static std::string dns_query_row(const dns_query& query) {
+    std::ostringstream out;
+
+    out << std::left << std::setw(13) << format_time(std::chrono::system_clock::now())
+    << std::setw(10) << query.pid << std::setw(10) << dns_type_to_string(query.type) << query.domain;
+
+    return out.str();
+}
+
+static Element dns_query_header() {
+    return hbox({
+        text("  "),
+        text("FIRST SEEN") | size(WIDTH, EQUAL, 13),
+        text("PID")  | size(WIDTH, EQUAL, 10),
+        text("TYPE") | size(WIDTH, EQUAL, 10),
+        text("DOMAIN"),
+    });
+}
+
 static void update_ebpf_rows(const std::vector<ebpf_traffic>& traffic,
     std::unordered_map<std::string, flow_metrics>& previous,
     std::chrono::steady_clock::time_point& last_sample,
@@ -390,6 +425,10 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         return status_msg::error;
     }
 
+    std::vector<dns_query> dns;
+    std::vector<std::string> dns_rows;
+    int selected_dns = 0;
+
     std::vector<ProcessInfo> processes;
     std::vector<SocketInfo> sockets;
 
@@ -407,9 +446,27 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
     int selected_event = 0;
 
     auto app = App::Fullscreen();
-    auto traffic_menu = Menu(&traffic_rows, &selected_traffic);
-    auto event_menu = Menu(&event_rows, &selected_event);
-    auto menus = Container::Vertical({traffic_menu, event_menu});
+
+    auto menu_style = MenuOption::Vertical();
+
+    menu_style.entries_option.transform = [](const EntryState& state) {
+        auto row = text(std::string(state.active ? "> " : "  ") + state.label);
+
+        if (state.focused) {
+            row = row | color(Color::Pink1);
+        }
+
+        if (state.active) {
+            row = row | bold;
+        }
+
+        return row;
+    };
+
+    auto traffic_menu = Menu(&traffic_rows, &selected_traffic, menu_style);
+    auto event_menu = Menu(&event_rows, &selected_event, menu_style);
+    auto dns_menu = Menu(&dns_rows, &selected_dns, menu_style);
+    auto menus = Container::Vertical({traffic_menu, event_menu, dns_menu});
 
     std::unordered_map<std::string, std::string> first_seen;
 
@@ -427,16 +484,33 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
             text(""),
             traffic_menu->Render() | vscroll_indicator | frame | flex,
             separator(),
-            text("CONNECTION LOGS (" + std::to_string(event_rows.size()) + ")") | hcenter,
-            ebpf_event_header(),
-            event_menu->Render() | vscroll_indicator | frame | size(HEIGHT, EQUAL, 10),
+            hbox({
+                vbox({
+                    text("CONNECTION LOGS (" + std::to_string(event_rows.size()) + ")") | hcenter,
+                    ebpf_event_header(),
+                    event_menu->Render() | vscroll_indicator | frame | size(HEIGHT, EQUAL, 10)
+                }) | flex,
+                separator(),
+                vbox({
+                    text("DNS QUERIES (" + std::to_string(dns_rows.size()) + ")") | hcenter,
+                    dns_query_header(),
+                    dns_menu->Render() | vscroll_indicator | frame | size(HEIGHT, EQUAL, 10)
+                }) | flex,
+            }),
             text(""),
             text("↑/↓ - select | Tab - switch list | q/Esc - exit") | dim,
         });
     });
 
-    bool act_foc = true;
+    std::vector<Component> focus_menus = {
+        traffic_menu,
+        event_menu,
+        dns_menu,
+    };
+
+    int focused_menu = 0;
     traffic_menu->TakeFocus();
+
     component |= CatchEvent([&](const Event& event) -> bool {
         if (event == Event::Character('q') || event == Event::Escape) {
             app.Exit();
@@ -444,14 +518,13 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         }
 
         if (event == Event::Tab || event == Event::TabReverse) {
-            act_foc = !act_foc;
-            if (act_foc) {
-                traffic_menu->TakeFocus();
-            } else {
-                event_menu->TakeFocus();
-            }
+            int direction = event == Event::Tab ? 1 : -1;
+            int count = static_cast<int>(focus_menus.size());
+            focused_menu = (focused_menu + direction + count) % count;
+            focus_menus[focused_menu]->TakeFocus();
             return true;
         }
+
         return false;
     });
 
@@ -463,11 +536,19 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
     Loop loop(&app, component);
     while (!loop.HasQuitted()) {
         bool traffic_updated = false;
-        auto step = ebpf_get_step(monitor, events, traffic, &traffic_updated);
+        auto step = ebpf_get_step(monitor, events, traffic, &traffic_updated, &dns);
         events_history.insert(events_history.end(), events.begin(), events.end());
 
         for (const auto& e : events) {
             event_rows.push_back(ebpf_event_row(e, first_seen));
+        }
+
+        for (const auto& query : dns) {
+            dns_rows.push_back(dns_query_row(query));
+        }
+
+        if (!dns.empty()) {
+            selected_dns = static_cast<int>(dns_rows.size()) - 1;
         }
 
         if (traffic_updated) {
@@ -482,7 +563,7 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
             lt2 = std::chrono::system_clock::now();
         }
 
-        if (!events.empty() || traffic_updated) {
+        if (!events.empty() || !dns.empty() || traffic_updated) {
             app.RequestAnimationFrame();
         }
 
