@@ -234,6 +234,7 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
         if ((exp) && (lt2 + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
             if (export_socket_json(path, pids, proc_name, processes, live_sockets) != status_msg::success) {
                 return status_msg::error;
+                break;
             }
             lt2 = std::chrono::system_clock::now();
         }
