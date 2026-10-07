@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2)
 project(
         flowray
-        VERSION 0.4.0
+        VERSION 1.0.0
         DESCRIPTION "Linux application network activity analyzer"
         LANGUAGES CXX
 )
@@ -41,8 +41,25 @@ find_program(BPFTOOL_EXECUTABLE
         REQUIRED
 )
 
+if(NOT EXISTS "/sys/kernel/btf/vmlinux")
+    message(FATAL_ERROR "Kernel BTF not found at /sys/kernel/btf/vmlinux")
+endif()
+
+add_custom_command(
+        OUTPUT ${EBPF_DIR}/vmlinux.h
+
+        COMMAND /bin/sh -c
+        "\"${BPFTOOL_EXECUTABLE}\" btf dump file /sys/kernel/btf/vmlinux format c > \"${EBPF_DIR}/vmlinux.h\""
+
+        DEPENDS /sys/kernel/btf/vmlinux
+
+        COMMENT "Generating vmlinux.h from kernel BTF"
+        VERBATIM
+)
+
 add_custom_command(
         OUTPUT ${EBPF_DIR}/ebpf_connect.skel.h
+        BYPRODUCTS ${EBPF_DIR}/ebpf_connect.bpf.o
 
         COMMAND ${CLANG_EXECUTABLE} -g -O2 -target bpf -I${EBPF_DIR}
         -c ${EBPF_DIR}/ebpf_connect.bpf.c -o ${EBPF_DIR}/ebpf_connect.bpf.o
