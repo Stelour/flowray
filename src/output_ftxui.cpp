@@ -165,7 +165,7 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
         }
 
         if (state.active) {
-            row = row | bold;
+            row = row | color(Color::LightPink3) | bold;
         }
 
         return row;
@@ -457,7 +457,7 @@ status_msg output_ebpf_live(const std::vector<std::uint32_t>& pids, const std::s
         }
 
         if (state.active) {
-            row = row | bold;
+            row = row | color(Color::LightPink3) | bold;
         }
 
         return row;
