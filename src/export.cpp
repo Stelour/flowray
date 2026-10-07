@@ -110,8 +110,9 @@ status_msg export_socket_json(
     }
 
     out_file << std::setw(2) << j;
+    out_file.close();
 
-    return status_msg::success;
+    return out_file.fail() ? status_msg::error : status_msg::success;
 }
 
 status_msg export_ebpf_json(
@@ -177,6 +178,7 @@ status_msg export_ebpf_json(
     }
 
     out_file << std::setw(2) << j;
+    out_file.close();
 
-    return status_msg::success;
+    return out_file.fail() ? status_msg::error : status_msg::success;
 }
