@@ -93,6 +93,10 @@ add_executable(flowray main.cpp
         ebpf/ebpf_connect.skel.h
         src/output_ftxui.cpp
         headers/output_ftxui.h
+        src/export.cpp
+        headers/export.h
+        src/supp_funcs.cpp
+        headers/supp_funcs.h
 )
 
 target_link_libraries(flowray PRIVATE CLI11::CLI11 PkgConfig::LIBBPF ftxui::screen ftxui::dom ftxui::component)

@@ -1,6 +1,8 @@
 #include "../headers/output_ftxui.h"
 #include "../headers/pid.h"
 #include "../ebpf/ebpf_monitor.h"
+#include "../headers/supp_funcs.h"
+#include "../headers/export.h"
 
 #include <ftxui/component/app.hpp>             // for Component, App
 #include <ftxui/component/component.hpp>       // for Toggle, Renderer, Vertical
@@ -28,40 +30,6 @@ static std::string print_process_info(const std::vector<ProcessInfo>& processes)
         procs += process.name + "[" + std::to_string(process.pid) + "]  ";
     }
     return procs;
-}
-
-static std::string state_to_string(std::uint8_t state) {
-    switch (state) {
-    case 1: return "ESTABLISHED";
-    case 2: return "SYN_SENT";
-    case 3: return "SYN_RECV";
-    case 4: return "FIN_WAIT1";
-    case 5: return "FIN_WAIT2";
-    case 6: return "TIME_WAIT";
-    case 7: return "CLOSE";
-    case 8: return "CLOSE_WAIT";
-    case 9: return "LAST_ACK";
-    case 10: return "LISTEN";
-    case 11: return "CLOSING";
-    case 12: return "NEW_SYN_RECV";
-    default: return "UNKNOWN";
-    }
-}
-
-static std::string protocol_to_string(int protocol) {
-    switch (protocol) {
-    case IPPROTO_TCP: return "TCP";
-    case IPPROTO_UDP: return "UDP";
-    default: return "UNKNOWN";
-    }
-}
-
-static std::string family_to_string(int family) {
-    switch (family) {
-    case AF_INET: return "IPv4";
-    case AF_INET6: return "IPv6";
-    default: return "UNKNOWN";
-    }
 }
 
 static std::string format_time(const std::chrono::system_clock::time_point& time) {
@@ -144,12 +112,17 @@ static Element socket_header(bool active, bool pid_detail) {
 }
 
 status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
-    bool pid_tree, bool pid_detail, const std::string& proc_name) {
+    bool pid_tree, bool pid_detail, const std::string& proc_name, const std::string& path) {
     std::string nm = proc_name;
     if (proc_name.empty()) {
         for (auto pid : pids) {
             nm = std::to_string(pid);
         }
+    }
+
+    bool exp = false;
+    if (!path.empty()) {
+        exp = true;
     }
 
     std::vector<LiveSocket> live_sockets;
@@ -234,12 +207,19 @@ status_msg output_table_socket_live(std::vector<std::uint32_t> pids,
     Loop loop(&app, component);
 
     auto lt = std::chrono::system_clock::now();
+    auto lt2 = std::chrono::system_clock::now();
     while (!loop.HasQuitted()) {
         if (lt + std::chrono::milliseconds(100) <= std::chrono::system_clock::now()) {
             update_live_data(pids, pid_tree, proc_name, processes, live_sockets);
             refresh_rows();
             app.RequestAnimationFrame();
             lt = std::chrono::system_clock::now();
+        }
+        if ((exp) && (lt2 + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
+            if (export_socket_json(path, pids, proc_name, processes, live_sockets) != status_msg::success) {
+                return status_msg::error;
+            }
+            lt2 = std::chrono::system_clock::now();
         }
         loop.RunOnce();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

@@ -2,6 +2,7 @@
 #include "headers/proc_name.h"
 #include "ebpf/ebpf_monitor.h"
 #include "headers/output_ftxui.h"
+#include "headers/export.h"
 
 #include <CLI/CLI.hpp>
 #include <iostream>
@@ -72,6 +73,13 @@ int main(int argc, char* argv[]) {
         "Set the eBPF event ring buffer size in KiB (power of two, min 256)"
         );
 
+    std::string export_path;
+    app.add_option(
+        "--export,-e",
+        export_path,
+        "Export monitoring data to a JSON file"
+        );
+
     op_pid->excludes(op_name);
     op_name->excludes(op_pid);
     op_ring_size->excludes(op_socket);
@@ -82,6 +90,17 @@ int main(int argc, char* argv[]) {
     if (!(*op_pid || *op_name)) {
         std::cout << app.help();
         return 0;
+    }
+
+    if (!export_path.empty()) {
+        if (validate_export_path(export_path) != status_msg::success) {
+            std::cerr << "ERROR: failed to export " << export_path << std::endl;
+            return 1;
+        }
+        if (validate_exs_file(export_path) != status_msg::success) {
+            std::cerr << "ERROR: export file incorrectly formatted" << std::endl;
+            return 1;
+        }
     }
 
     ring_buf_size *= 1024;
@@ -107,7 +126,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (is_socket) {
-        if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, print_term) != status_msg::success) {
+        if (start_pid(pids, pid_tree, pid_detail, proc_live, proc_name, print_term, export_path) != status_msg::success) {
             std::cerr << "ERROR: failed to start process pid " << std::endl;
             return 1;
         }

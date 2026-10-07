@@ -3,6 +3,7 @@
 #include "../headers/socket.h"
 #include "../headers/proc_name.h"
 #include "../headers/output_ftxui.h"
+#include "../headers/export.h"
 
 #include <filesystem>
 #include <fstream>
@@ -175,14 +176,27 @@ status_msg update_live_data(
 
 static status_msg start_live_mode(
     std::vector<std::uint32_t> pids,
-    bool pid_tree, bool pid_detail, const std::string& proc_name
+    bool pid_tree, bool pid_detail, const std::string& proc_name, const std::string& path
     ) {
     std::vector<LiveSocket> live_sockets;
     std::vector<ProcessInfo> processes;
 
+    bool exp = false;
+    if (!path.empty()) {
+        exp = true;
+    }
+
+    auto lt = std::chrono::system_clock::now();
     while (true) {
         if (update_live_data(pids, pid_tree, proc_name, processes, live_sockets) != status_msg::success) {
             continue;
+        }
+
+        if ((exp) && (lt + std::chrono::milliseconds(1000) <= std::chrono::system_clock::now())) {
+            if (export_socket_json(path, pids, proc_name, processes, live_sockets) != status_msg::success) {
+                return status_msg::error;
+            }
+            lt = std::chrono::system_clock::now();
         }
 
         std::cout << "\033[2J\033[H" << std::flush;
@@ -194,12 +208,12 @@ static status_msg start_live_mode(
     }
 }
 
-status_msg start_pid(const std::vector<std::uint32_t>& pids, bool pid_tree, bool pid_detail, bool proc_live, const std::string& proc_name, bool live_print) {
+status_msg start_pid(const std::vector<std::uint32_t>& pids, bool pid_tree, bool pid_detail, bool proc_live, const std::string& proc_name, bool live_print, const std::string& path) {
     if (proc_live) {
         if (live_print) {
-            return start_live_mode(pids, pid_tree, pid_detail, proc_name);
+            return start_live_mode(pids, pid_tree, pid_detail, proc_name, path);
         }
-        return output_table_socket_live(pids, pid_tree, pid_detail, proc_name);
+        return output_table_socket_live(pids, pid_tree, pid_detail, proc_name, path);
     }
 
     std::vector<ProcessInfo> processes;
