@@ -318,7 +318,7 @@ static int seed_ex(ebpf_connect_bpf* skel, const std::vector<std::uint32_t>& pid
             }
 
             std::uint32_t pid = ref.pid;
-            if (bpf_map_update_elem(owners_fd, &cookie, &pid, BPF_NOEXIST) != 0 && errno != EEXIST) {
+            if (bpf_map_update_elem(owners_fd, &cookie, &pid, BPF_ANY) != 0 && errno != EEXIST) {
                 std::cerr << "Failed to seed owner: " << strerror(errno) << std::endl;
                 return -1;
             }

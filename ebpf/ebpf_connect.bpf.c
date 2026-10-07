@@ -97,7 +97,7 @@ static void remember_cookie(__u64 cookie) {
         return;
     }
 
-    bpf_map_update_elem(&socket_owners, &cookie, &pid, BPF_NOEXIST);
+    bpf_map_update_elem(&socket_owners, &cookie, &pid, BPF_ANY);
 }
 
 static int parse_user_sockaddr(void *addr, struct event *e) {
